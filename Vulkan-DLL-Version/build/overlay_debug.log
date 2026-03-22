@@ -1,0 +1,6 @@
+=== RandOverlay DLL loaded ===
+PID: 22232
+Log reader initialized, monitoring Archipelago logs
+Vulkan functions loaded from vulkan-1.dll
+vkQueuePresentKHR hooked at 0x00007ffed85e29a0
+Hook active. Overlay will initialize on first present call.
