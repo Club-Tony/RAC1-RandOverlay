@@ -4,13 +4,13 @@ Archipelago overlay for Ratchet & Clank 1 (RPCS3). Displays game events as a tra
 
 Works with RPCS3 in both windowed and fullscreen mode.
 
-### Hotkeys
-- **Ctrl+Alt+A** — Toggle overlay on/off
+### Optional Hotkeys
+- **Ctrl+Alt+A** — Toggle overlay on/off (ON by default)
 - **Ctrl+Alt+F** — Toggle font (HandelGothic BT / Bahnschrift)
 - **Ctrl+Esc** — Reload script (AHK version only)
 
 ## AHK Version
-Run `RandOverlay.ahk` with Archipelago Text Client active.
+Simply download and run `RandOverlay.ahk` with Archipelago Text Client active (Requires AutoHotkey v1 to be installed).
 
 ## PowerShell + WPF Version
-Keep `.bat` and `.ps1` in the same folder, run the `.bat` with Archipelago Text Client active.
+Keep `RandOverlay.bat` and `RandOverlay.ps1` in the same folder, run the `.bat` with Archipelago Text Client active.
