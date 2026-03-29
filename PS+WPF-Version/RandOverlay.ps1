@@ -18,7 +18,7 @@ $DisplaySeconds   = 5
 $FontFamily       = "HandelGothic BT"
 $FontFallback     = "Bahnschrift"
 $script:currentFont = $null
-$FontSize         = 38
+$FontSize         = 43
 $VerticalPercent  = 0.17
 $BgColor          = "#1E1E1E"
 $BgOpacity        = 0.80
@@ -90,7 +90,8 @@ $script:window         = $null
 $script:textBlock      = $null
 # ── Helper functions ───────────────────────────────────────────────────────────
 function Find-NewestLog {
-    $logs = Get-ChildItem -Path $LogDir -Filter "Launcher_*.txt" -ErrorAction SilentlyContinue |
+    $logs = Get-ChildItem -Path $LogDir -Filter "*.txt" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notmatch '^(Generate|Server)_' } |
             Sort-Object LastWriteTime -Descending
     if ($logs -and $logs.Count -gt 0) { return $logs[0].FullName }
     return $null
@@ -225,7 +226,9 @@ function Show-Message($text, $color) {
 # ── Startup ────────────────────────────────────────────────────────────────────
 Write-Log "Starting Archipelago Overlay"
 
-if (-not (Get-Process -Name "ArchipelagoLauncher" -ErrorAction SilentlyContinue)) {
+$apRunning = (Get-Process -Name "ArchipelagoLauncher" -ErrorAction SilentlyContinue) -or
+             (Get-Process | Where-Object { $_.MainWindowTitle -match 'Archipelago.*Client' } | Select-Object -First 1)
+if (-not $apRunning) {
     $result = [System.Windows.MessageBox]::Show(
         "Archipelago Launcher is not running. Launch it?",
         "Archipelago Overlay",

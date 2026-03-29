@@ -41,7 +41,14 @@ archFont := archFontFamily
 
 ; ── Startup checks ─────────────────────────────────────────────────────────────
 Process, Exist, ArchipelagoLauncher.exe
-if (!ErrorLevel) {
+archLauncherFound := ErrorLevel
+if (!archLauncherFound) {
+    ; Also check for any Archipelago client window (game-specific or text)
+    SetTitleMatchMode, RegEx
+    archLauncherFound := WinExist("Archipelago.*Client")
+    SetTitleMatchMode, 2
+}
+if (!archLauncherFound) {
     MsgBox, 4, Archipelago Overlay, Archipelago Launcher is not running. Launch it?
     IfMsgBox Yes
     {
@@ -206,8 +213,10 @@ ArchFindNewestLog() {
     newestFile := ""
     newestTime := ""
 
-    Loop, Files, %archLogDir%\Launcher_*.txt
+    Loop, Files, %archLogDir%\*.txt
     {
+        if (SubStr(A_LoopFileName, 1, 9) = "Generate_" || SubStr(A_LoopFileName, 1, 7) = "Server_")
+            continue
         if (A_LoopFileTimeModified > newestTime) {
             newestTime := A_LoopFileTimeModified
             newestFile := A_LoopFileFullPath
