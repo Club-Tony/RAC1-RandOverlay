@@ -19,7 +19,7 @@ archBgColor         := "1E1E1E"
 archFadeInMs        := 300
 archFadeOutMs       := 500
 archPollMs          := 1500
-archRpcs3Process    := "rpcs3.exe"
+archEmulatorProcesses := ["rpcs3.exe", "pcsx2-qt.exe", "pcsx2.exe"]
 archFadeStepMs      := 30
 
 ; ── State ──────────────────────────────────────────────────────────────────────
@@ -35,6 +35,10 @@ archCtrlColors      := {}
 archIsVisible       := false
 archFadeDirection   := 0
 archCurrentAlpha    := 0
+archBorderlessHwnd  := 0
+archOriginalStyle   := 0
+archOriginalExStyle := 0
+archOriginalRect    := {x: 0, y: 0, w: 0, h: 0}
 ; ── Resolve font ───────────────────────────────────────────────────────────────
 ; HandelGothic BT preferred; Bahnschrift fallback (ships with Windows 10/11)
 archFont := archFontFamily
@@ -127,6 +131,61 @@ ArchClearToggleTip:
 return
 
 ^Esc::Reload
+
+^!b::
+    ; Toggle borderless fullscreen on the emulator window
+    ; Prevents PCSX2's Direct Flip/iFlip from bypassing DWM composition
+    if (archBorderlessHwnd) {
+        ; Restore original window style
+        WinSet, Style, %archOriginalStyle%, ahk_id %archBorderlessHwnd%
+        WinSet, ExStyle, %archOriginalExStyle%, ahk_id %archBorderlessHwnd%
+        ox := archOriginalRect.x, oy := archOriginalRect.y
+        ow := archOriginalRect.w, oh := archOriginalRect.h
+        WinMove, ahk_id %archBorderlessHwnd%,, %ox%, %oy%, %ow%, %oh%
+        archBorderlessHwnd := 0
+        ArchShowMessage("Borderless OFF - restored window", 0xA88060)
+        SetTimer, ArchHideAfterDelay, -1500
+        return
+    }
+    ; Find emulator window
+    emuHwnd := 0
+    for i, proc in archEmulatorProcesses {
+        emuHwnd := WinExist("ahk_exe " . proc)
+        if (emuHwnd)
+            break
+    }
+    if (!emuHwnd) {
+        ArchShowMessage("No emulator window found", 0xA88060)
+        SetTimer, ArchHideAfterDelay, -1500
+        return
+    }
+    ; Save original state
+    WinGet, origStyle, Style, ahk_id %emuHwnd%
+    WinGet, origExStyle, ExStyle, ahk_id %emuHwnd%
+    WinGetPos, ox, oy, ow, oh, ahk_id %emuHwnd%
+    archOriginalStyle := origStyle
+    archOriginalExStyle := origExStyle
+    archOriginalRect := {x: ox, y: oy, w: ow, h: oh}
+    archBorderlessHwnd := emuHwnd
+    ; Strip window chrome (WS_CAPTION=0xC00000, WS_THICKFRAME=0x40000)
+    newStyle := origStyle & ~0x00C00000 & ~0x00040000
+    WinSet, Style, %newStyle%, ahk_id %emuHwnd%
+    ; Find which monitor the emulator is on and fill it
+    SysGet, monCount, MonitorCount
+    Loop, %monCount% {
+        SysGet, mon, Monitor, %A_Index%
+        midX := ox + (ow // 2)
+        midY := oy + (oh // 2)
+        if (midX >= monLeft && midX < monRight && midY >= monTop && midY < monBottom) {
+            monW := monRight - monLeft
+            monH := monBottom - monTop
+            WinMove, ahk_id %emuHwnd%,, %monLeft%, %monTop%, %monW%, %monH%
+            break
+        }
+    }
+    ArchShowMessage("Borderless ON", 0xA88060)
+    SetTimer, ArchHideAfterDelay, -1500
+return
 
 ^!f::
     if (archFont = "HandelGothic BT") {
@@ -293,11 +352,16 @@ ArchShowMessage(text, colorRef) {
 }
 
 ArchPositionOverlay() {
-    global archGuiHwnd, archRpcs3Process, archVerticalPct, archTextHwnd
+    global archGuiHwnd, archEmulatorProcesses, archVerticalPct, archTextHwnd
 
-    rpcs3Win := WinExist("ahk_exe " . archRpcs3Process)
-    if (rpcs3Win) {
-        WinGetPos, wx, wy, ww, wh, ahk_id %rpcs3Win%
+    emuWin := 0
+    for i, proc in archEmulatorProcesses {
+        emuWin := WinExist("ahk_exe " . proc)
+        if (emuWin)
+            break
+    }
+    if (emuWin) {
+        WinGetPos, wx, wy, ww, wh, ahk_id %emuWin%
     } else {
         SysGet, MonArea, MonitorWorkArea
         wx := MonAreaLeft

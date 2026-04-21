@@ -24,7 +24,7 @@ $BgColor          = "#1E1E1E"
 $BgOpacity        = 0.80
 $CornerRadius     = 12
 $PollMs           = 1500
-$Rpcs3Process     = "rpcs3"
+$EmulatorProcesses = @("rpcs3", "pcsx2-qt", "pcsx2")
 
 # ── Message color map ──────────────────────────────────────────────────────────
 $OverlayColor = "#80A0D0"   # RAC1 steel blue (brighter)
@@ -68,6 +68,10 @@ public class OverlayWinApi {
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_FRAMECHANGED = 0x0020;
 
+    public const int GWL_STYLE = -16;
+    public const int WS_CAPTION = 0x00C00000;
+    public const int WS_THICKFRAME = 0x00040000;
+
     public static void MakeClickThrough(IntPtr hwnd) {
         int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
         SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
@@ -75,6 +79,16 @@ public class OverlayWinApi {
     public static void KeepTopmost(IntPtr hwnd) {
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
+    public static void StripBorders(IntPtr hwnd) {
+        int style = GetWindowLong(hwnd, GWL_STYLE);
+        SetWindowLong(hwnd, GWL_STYLE, style & ~WS_CAPTION & ~WS_THICKFRAME);
+        SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+    }
+    public static void RestoreBorders(IntPtr hwnd, int originalStyle) {
+        SetWindowLong(hwnd, GWL_STYLE, originalStyle);
+        SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+    }
+    public static int GetStyle(IntPtr hwnd) { return GetWindowLong(hwnd, GWL_STYLE); }
 }
 "@
 }
@@ -82,12 +96,15 @@ public class OverlayWinApi {
 Write-Log "Assemblies loaded"
 
 # ── State ──────────────────────────────────────────────────────────────────────
-$script:lastLineCount  = 0
-$script:currentLogFile = $null
-$script:overlayEnabled = $true
-$script:displayTimer   = $null
-$script:window         = $null
-$script:textBlock      = $null
+$script:lastLineCount    = 0
+$script:currentLogFile   = $null
+$script:overlayEnabled   = $true
+$script:displayTimer     = $null
+$script:window           = $null
+$script:textBlock        = $null
+$script:borderlessHwnd   = [IntPtr]::Zero
+$script:borderlessOrigStyle = 0
+$script:borderlessOrigRect  = $null
 # ── Helper functions ───────────────────────────────────────────────────────────
 function Find-NewestLog {
     $logs = Get-ChildItem -Path $LogDir -Filter "*.txt" -ErrorAction SilentlyContinue |
@@ -97,15 +114,20 @@ function Find-NewestLog {
     return $null
 }
 
-function Get-Rpcs3Bounds {
-    $proc = Get-Process -Name $Rpcs3Process -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $proc -or $proc.MainWindowHandle -eq [IntPtr]::Zero) { return $null }
-    $rect = New-Object OverlayWinApi+RECT
-    [OverlayWinApi]::GetWindowRect($proc.MainWindowHandle, [ref]$rect) | Out-Null
-    $w = $rect.Right - $rect.Left
-    $h = $rect.Bottom - $rect.Top
-    if ($w -le 0 -or $h -le 0) { return $null }
-    return @{ Left = $rect.Left; Top = $rect.Top; Width = $w; Height = $h }
+function Get-EmulatorBounds {
+    foreach ($name in $EmulatorProcesses) {
+        $proc = Get-Process -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($proc -and $proc.MainWindowHandle -ne [IntPtr]::Zero) {
+            $rect = New-Object OverlayWinApi+RECT
+            [OverlayWinApi]::GetWindowRect($proc.MainWindowHandle, [ref]$rect) | Out-Null
+            $w = $rect.Right - $rect.Left
+            $h = $rect.Bottom - $rect.Top
+            if ($w -gt 0 -and $h -gt 0) {
+                return @{ Left = $rect.Left; Top = $rect.Top; Width = $w; Height = $h }
+            }
+        }
+    }
+    return $null
 }
 
 function Get-MessageColor($text) {
@@ -155,7 +177,7 @@ function Read-NewLines {
 
 function Position-Overlay {
     if (-not $script:window) { return }
-    $bounds = Get-Rpcs3Bounds
+    $bounds = Get-EmulatorBounds
     if (-not $bounds) {
         $screen = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
         $bounds = @{ Left = $screen.Left; Top = $screen.Top; Width = $screen.Width; Height = $screen.Height }
@@ -411,6 +433,72 @@ $script:window.Add_Loaded({
         }
     })
     $fk.Start()
+
+    # ── Borderless toggle poll (Ctrl+Alt+B) ─────────────────────────────
+    $bk = New-Object System.Windows.Threading.DispatcherTimer
+    $bk.Interval = [TimeSpan]::FromMilliseconds(200)
+    $script:bkDown = $false
+    $bk.Add_Tick({
+        try {
+            $ctrl = [System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Control
+            $alt  = [System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Alt
+            $bKey = [System.Windows.Input.Keyboard]::IsKeyDown([System.Windows.Input.Key]::B)
+            if ($ctrl -and $alt -and $bKey) {
+                if (-not $script:bkDown) {
+                    $script:bkDown = $true
+                    if ($script:borderlessHwnd -ne [IntPtr]::Zero) {
+                        # Restore original window
+                        [OverlayWinApi]::RestoreBorders($script:borderlessHwnd, $script:borderlessOrigStyle)
+                        $r = $script:borderlessOrigRect
+                        [OverlayWinApi]::SetWindowPos($script:borderlessHwnd, [IntPtr]::Zero,
+                            $r.Left, $r.Top, ($r.Right - $r.Left), ($r.Bottom - $r.Top),
+                            0x0020 -bor 0x0010)  # SWP_FRAMECHANGED | SWP_NOACTIVATE
+                        $script:borderlessHwnd = [IntPtr]::Zero
+                        Write-Host "  >> Borderless OFF"
+                        Show-Message "Borderless OFF - restored window" $OverlayColor
+                    } else {
+                        # Find emulator window
+                        $emuProc = $null
+                        foreach ($name in $EmulatorProcesses) {
+                            $emuProc = Get-Process -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
+                            if ($emuProc -and $emuProc.MainWindowHandle -ne [IntPtr]::Zero) { break }
+                            $emuProc = $null
+                        }
+                        if (-not $emuProc) {
+                            Show-Message "No emulator window found" $OverlayColor
+                        } else {
+                            $hwnd = $emuProc.MainWindowHandle
+                            # Save original state
+                            $script:borderlessOrigStyle = [OverlayWinApi]::GetStyle($hwnd)
+                            $origRect = New-Object OverlayWinApi+RECT
+                            [OverlayWinApi]::GetWindowRect($hwnd, [ref]$origRect) | Out-Null
+                            $script:borderlessOrigRect = $origRect
+                            $script:borderlessHwnd = $hwnd
+                            # Strip borders
+                            [OverlayWinApi]::StripBorders($hwnd)
+                            # Find the monitor and fill it
+                            $midX = $origRect.Left + (($origRect.Right - $origRect.Left) / 2)
+                            $midY = $origRect.Top + (($origRect.Bottom - $origRect.Top) / 2)
+                            $screen = [System.Windows.Forms.Screen]::AllScreens | Where-Object {
+                                $_.Bounds.Contains([int]$midX, [int]$midY)
+                            } | Select-Object -First 1
+                            if (-not $screen) { $screen = [System.Windows.Forms.Screen]::PrimaryScreen }
+                            $b = $screen.Bounds
+                            [OverlayWinApi]::SetWindowPos($hwnd, [IntPtr]::Zero,
+                                $b.Left, $b.Top, $b.Width, $b.Height,
+                                0x0020 -bor 0x0010)  # SWP_FRAMECHANGED | SWP_NOACTIVATE
+                            Write-Host "  >> Borderless ON"
+                            Show-Message "Borderless ON" $OverlayColor
+                        }
+                    }
+                }
+            } else { $script:bkDown = $false }
+        } catch {
+            $script:bkDown = $false
+            Write-Log "Borderless hotkey error: $($_.Exception.Message)"
+        }
+    })
+    $bk.Start()
 
     # ── Topmost re-assert ──────────────────────────────────────────────────
     $tm = New-Object System.Windows.Threading.DispatcherTimer
