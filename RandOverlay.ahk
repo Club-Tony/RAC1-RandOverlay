@@ -8,6 +8,12 @@ SetTitleMatchMode, 2
 
 
 ; ── Configuration ──────────────────────────────────────────────────────────────
+archSelfTest        := false
+archConfigFile      := A_ScriptDir . "\RandOverlay.ini"
+archConfigWarning   := ""
+archDefaultPreset   := "RAC1"
+archActivePreset    := "RAC1"
+archPresetDisplayName := "Ratchet & Clank 1"
 archLogDir          := "C:\ProgramData\Archipelago\logs"
 archLauncherExe     := "C:\ProgramData\Archipelago\ArchipelagoLauncher.exe"
 archDisplayMs       := 5000
@@ -16,11 +22,17 @@ archFontFallback    := "Bahnschrift"
 archFontSize        := 32
 archVerticalPct     := 0.17
 archBgColor         := "1E1E1E"
+archBgColorBgr      := 0x1E1E1E
+archOverlayColorRgb := "80A0D0"
+archOverlayColorBgr := 0xD0A080
 archFadeInMs        := 300
 archFadeOutMs       := 500
 archPollMs          := 1500
-archEmulatorProcesses := ["rpcs3.exe", "pcsx2-qt.exe", "pcsx2.exe"]
+archEmulatorProcesses := ["rpcs3.exe"]
 archFadeStepMs      := 30
+ArchParseArgs()
+ArchLoadConfig()
+ArchApplySelfTestOverrides()
 
 ; ── State ──────────────────────────────────────────────────────────────────────
 archLastFileSize    := 0
@@ -52,7 +64,7 @@ if (!archLauncherFound) {
     archLauncherFound := WinExist("Archipelago.*Client")
     SetTitleMatchMode, 2
 }
-if (!archLauncherFound) {
+if (!archLauncherFound && !archSelfTest) {
     MsgBox, 4, Archipelago Overlay, Archipelago Launcher is not running. Launch it?
     IfMsgBox Yes
     {
@@ -106,14 +118,19 @@ SetTimer, ArchReassertTopmost, 2000
 
 ; Show startup test notification
 Sleep, 500
-ArchShowMessage("Archipelago Overlay ready - waiting for events", 0xA88060)
+if (archConfigWarning != "")
+    ArchShowMessage(archConfigWarning, archOverlayColorBgr)
+else
+    ArchShowMessage("Archipelago Overlay ready - waiting for events", archOverlayColorBgr)
+if (archSelfTest)
+    SetTimer, ArchSelfTestExit, -750
 return
 
 ; ── Hotkeys ────────────────────────────────────────────────────────────────────
 ^!a::
     archOverlayEnabled := !archOverlayEnabled
     if (archOverlayEnabled) {
-        ArchShowMessage("Overlay ON", 0xA88060)
+        ArchShowMessage("Overlay ON", archOverlayColorBgr)
         ; Override display timer to 1.5s for toggle feedback
         SetTimer, ArchHideAfterDelay, -1500
     } else {
@@ -139,84 +156,84 @@ return
         ; Restore original window style
         WinSet, Style, %archOriginalStyle%, ahk_id %archBorderlessHwnd%
         WinSet, ExStyle, %archOriginalExStyle%, ahk_id %archBorderlessHwnd%
-        ox := archOriginalRect.x, oy := archOriginalRect.y
-        ow := archOriginalRect.w, oh := archOriginalRect.h
-        WinMove, ahk_id %archBorderlessHwnd%,, %ox%, %oy%, %ow%, %oh%
+        archBorderRestoreX := archOriginalRect.x, archBorderRestoreY := archOriginalRect.y
+        archBorderRestoreW := archOriginalRect.w, archBorderRestoreH := archOriginalRect.h
+        WinMove, ahk_id %archBorderlessHwnd%,, %archBorderRestoreX%, %archBorderRestoreY%, %archBorderRestoreW%, %archBorderRestoreH%
         archBorderlessHwnd := 0
-        ArchShowMessage("Borderless OFF - restored window", 0xA88060)
+        ArchShowMessage("Borderless OFF - restored window", archOverlayColorBgr)
         SetTimer, ArchHideAfterDelay, -1500
         return
     }
     ; Find emulator window
-    emuHwnd := 0
-    for i, proc in archEmulatorProcesses {
-        emuHwnd := WinExist("ahk_exe " . proc)
-        if (emuHwnd)
+    archBorderHwnd := 0
+    for archBorderIndex, archBorderProc in archEmulatorProcesses {
+        archBorderHwnd := WinExist("ahk_exe " . archBorderProc)
+        if (archBorderHwnd)
             break
     }
-    if (!emuHwnd) {
-        ArchShowMessage("No emulator window found", 0xA88060)
+    if (!archBorderHwnd) {
+        ArchShowMessage("No emulator window found", archOverlayColorBgr)
         SetTimer, ArchHideAfterDelay, -1500
         return
     }
     ; Save original state
-    WinGet, origStyle, Style, ahk_id %emuHwnd%
-    WinGet, origExStyle, ExStyle, ahk_id %emuHwnd%
-    WinGetPos, ox, oy, ow, oh, ahk_id %emuHwnd%
-    archOriginalStyle := origStyle
-    archOriginalExStyle := origExStyle
-    archOriginalRect := {x: ox, y: oy, w: ow, h: oh}
-    archBorderlessHwnd := emuHwnd
+    WinGet, archBorderOrigStyle, Style, ahk_id %archBorderHwnd%
+    WinGet, archBorderOrigExStyle, ExStyle, ahk_id %archBorderHwnd%
+    WinGetPos, archBorderOrigX, archBorderOrigY, archBorderOrigW, archBorderOrigH, ahk_id %archBorderHwnd%
+    archOriginalStyle := archBorderOrigStyle
+    archOriginalExStyle := archBorderOrigExStyle
+    archOriginalRect := {x: archBorderOrigX, y: archBorderOrigY, w: archBorderOrigW, h: archBorderOrigH}
+    archBorderlessHwnd := archBorderHwnd
     ; Strip window chrome (WS_CAPTION=0xC00000, WS_THICKFRAME=0x40000)
-    newStyle := origStyle & ~0x00C00000 & ~0x00040000
-    WinSet, Style, %newStyle%, ahk_id %emuHwnd%
+    archBorderNewStyle := archBorderOrigStyle & ~0x00C00000 & ~0x00040000
+    WinSet, Style, %archBorderNewStyle%, ahk_id %archBorderHwnd%
     ; Find which monitor the emulator is on and fill it
-    SysGet, monCount, MonitorCount
-    Loop, %monCount% {
-        SysGet, mon, Monitor, %A_Index%
-        midX := ox + (ow // 2)
-        midY := oy + (oh // 2)
-        if (midX >= monLeft && midX < monRight && midY >= monTop && midY < monBottom) {
-            monW := monRight - monLeft
-            monH := monBottom - monTop
-            WinMove, ahk_id %emuHwnd%,, %monLeft%, %monTop%, %monW%, %monH%
+    SysGet, archBorderMonitorCount, MonitorCount
+    Loop, %archBorderMonitorCount% {
+        SysGet, archBorderMonitor, Monitor, %A_Index%
+        archBorderMidX := archBorderOrigX + (archBorderOrigW // 2)
+        archBorderMidY := archBorderOrigY + (archBorderOrigH // 2)
+        if (archBorderMidX >= archBorderMonitorLeft && archBorderMidX < archBorderMonitorRight && archBorderMidY >= archBorderMonitorTop && archBorderMidY < archBorderMonitorBottom) {
+            archBorderMonitorW := archBorderMonitorRight - archBorderMonitorLeft
+            archBorderMonitorH := archBorderMonitorBottom - archBorderMonitorTop
+            WinMove, ahk_id %archBorderHwnd%,, %archBorderMonitorLeft%, %archBorderMonitorTop%, %archBorderMonitorW%, %archBorderMonitorH%
             break
         }
     }
-    ArchShowMessage("Borderless ON", 0xA88060)
+    ArchShowMessage("Borderless ON", archOverlayColorBgr)
     SetTimer, ArchHideAfterDelay, -1500
 return
 
 ^!f::
-    if (archFont = "HandelGothic BT") {
-        archFont := "Bahnschrift"
+    if (archFont = archFontFamily) {
+        archFont := archFontFallback
     } else {
-        archFont := "HandelGothic BT"
+        archFont := archFontFamily
     }
     Gui, ArchOvl:Font, s%archFontSize%, %archFont%
     GuiControl, ArchOvl:Font, ArchOvlText
-    ArchShowMessage("Font: " . archFont, 0xA88060)
+    ArchShowMessage("Font: " . archFont, archOverlayColorBgr)
     SetTimer, ArchHideAfterDelay, -1500
 return
 
 ; ── Log polling ────────────────────────────────────────────────────────────────
 ArchPollLog:
-    newest := ArchFindNewestLog()
-    if (newest != "" && newest != archCurrentLogFile) {
+    archPollNewest := ArchFindNewestLog()
+    if (archPollNewest != "" && archPollNewest != archCurrentLogFile) {
         ; #8 HIGH: Seed new log file instead of resetting to 0 (prevents message flood)
-        archCurrentLogFile := newest
+        archCurrentLogFile := archPollNewest
         FileGetSize, archLastFileSize, %archCurrentLogFile%
-        FileRead, switchContent, %archCurrentLogFile%
+        FileRead, archPollSwitchContent, %archCurrentLogFile%
         if (!ErrorLevel) {
-            switchLines := StrSplit(switchContent, "`n", "`r")
-            while (switchLines.Length() > 0 && switchLines[switchLines.Length()] = "")
-                switchLines.RemoveAt(switchLines.Length())
-            archLastLineCount := switchLines.Length()
+            archPollSwitchLines := StrSplit(archPollSwitchContent, "`n", "`r")
+            while (archPollSwitchLines.Length() > 0 && archPollSwitchLines[archPollSwitchLines.Length()] = "")
+                archPollSwitchLines.RemoveAt(archPollSwitchLines.Length())
+            archLastLineCount := archPollSwitchLines.Length()
         } else {
             archLastLineCount := 0
         }
-        switchContent := ""
-        switchLines := ""
+        archPollSwitchContent := ""
+        archPollSwitchLines := ""
     }
     if (archCurrentLogFile = "")
         return
@@ -224,44 +241,44 @@ ArchPollLog:
         return
 
     ; Check file size first — skip read if unchanged
-    FileGetSize, currentSize, %archCurrentLogFile%
-    if (currentSize <= archLastFileSize)
+    FileGetSize, archPollCurrentSize, %archCurrentLogFile%
+    if (archPollCurrentSize <= archLastFileSize)
         return
-    archLastFileSize := currentSize
+    archLastFileSize := archPollCurrentSize
 
     ; File grew — read new content
-    file := FileOpen(archCurrentLogFile, "r")
-    if (!file)
+    archPollFile := FileOpen(archCurrentLogFile, "r")
+    if (!archPollFile)
         return
-    rawContent := file.Read()
-    file.Close()
+    archPollRawContent := archPollFile.Read()
+    archPollFile.Close()
 
-    allLines := StrSplit(rawContent, "`n", "`r")
+    archPollAllLines := StrSplit(archPollRawContent, "`n", "`r")
     ; Strip trailing empty elements from split
-    while (allLines.Length() > 0 && allLines[allLines.Length()] = "")
-        allLines.RemoveAt(allLines.Length())
-    lineCount := allLines.Length()
-    if (lineCount <= archLastLineCount)
+    while (archPollAllLines.Length() > 0 && archPollAllLines[archPollAllLines.Length()] = "")
+        archPollAllLines.RemoveAt(archPollAllLines.Length())
+    archPollLineCount := archPollAllLines.Length()
+    if (archPollLineCount <= archLastLineCount)
         return
 
-    latestMsg := ""
-    latestColor := 0
+    archPollLatestMsg := ""
+    archPollLatestColor := 0
 
-    Loop % lineCount - archLastLineCount
+    Loop % archPollLineCount - archLastLineCount
     {
-        idx := archLastLineCount + A_Index
-        line := allLines[idx]
-        parsed := ArchParseLine(line)
-        if (parsed.text != "") {
-            latestMsg := parsed.text
-            latestColor := parsed.color
+        archPollIndex := archLastLineCount + A_Index
+        archPollLine := archPollAllLines[archPollIndex]
+        archPollParsed := ArchParseLine(archPollLine)
+        if (archPollParsed.text != "") {
+            archPollLatestMsg := archPollParsed.text
+            archPollLatestColor := archPollParsed.color
         }
     }
 
-    archLastLineCount := lineCount
+    archLastLineCount := archPollLineCount
 
-    if (latestMsg != "")
-        ArchShowMessage(latestMsg, latestColor)
+    if (archPollLatestMsg != "")
+        ArchShowMessage(archPollLatestMsg, archPollLatestColor)
 return
 
 ; ── Functions ──────────────────────────────────────────────────────────────────
@@ -284,7 +301,165 @@ ArchFindNewestLog() {
     return newestFile
 }
 
+ArchParseArgs() {
+    global archSelfTest
+
+    for archArgIndex, archArg in A_Args {
+        if (archArg = "--self-test")
+            archSelfTest := true
+    }
+}
+
+ArchApplySelfTestOverrides() {
+    global archSelfTest, archLogDir
+
+    if (!archSelfTest)
+        return
+
+    EnvGet, archSelfTestLogDir, RANDO_OVERLAY_TEST_LOGDIR
+    if (archSelfTestLogDir != "")
+        archLogDir := archSelfTestLogDir
+}
+
+ArchLoadConfig() {
+    global archConfigFile, archConfigWarning, archDefaultPreset, archActivePreset, archPresetDisplayName
+    global archLogDir, archLauncherExe, archDisplayMs, archFontFamily, archFontFallback, archFontSize
+    global archVerticalPct, archBgColor, archBgColorBgr, archOverlayColorRgb, archOverlayColorBgr
+    global archFadeInMs, archFadeOutMs, archPollMs, archEmulatorProcesses
+
+    if (!FileExist(archConfigFile)) {
+        ArchSetConfigWarning("RandOverlay.ini not found; using built-in RAC1 defaults.")
+        return
+    }
+
+    selectedPreset := ArchIniRead("General", "ActivePreset", archDefaultPreset)
+    selectedPreset := Trim(selectedPreset)
+    StringUpper, selectedPreset, selectedPreset
+    if (!ArchIsKnownPreset(selectedPreset)) {
+        ArchSetConfigWarning("Unknown ActivePreset '" . selectedPreset . "'; using RAC1 defaults.")
+        selectedPreset := archDefaultPreset
+    }
+    archActivePreset := selectedPreset
+
+    presetSection := "Preset." . archActivePreset
+    defaultEmulators := ArchDefaultEmulatorsForPreset(archActivePreset)
+    defaultDisplayName := ArchDefaultDisplayNameForPreset(archActivePreset)
+
+    archLogDir := ArchIniRead("General", "LogDir", archLogDir)
+    archLauncherExe := ArchIniRead("General", "LauncherExe", archLauncherExe)
+    archDisplayMs := ArchIniReadInt("General", "DisplayMs", archDisplayMs, 1)
+    archPollMs := ArchIniReadInt("General", "PollMs", archPollMs, 1)
+    archFadeInMs := ArchIniReadInt("General", "FadeInMs", archFadeInMs, 0)
+    archFadeOutMs := ArchIniReadInt("General", "FadeOutMs", archFadeOutMs, 0)
+
+    archPresetDisplayName := ArchIniRead(presetSection, "DisplayName", defaultDisplayName)
+    archEmulatorProcesses := ArchCsvToArray(ArchIniRead(presetSection, "EmulatorProcesses", defaultEmulators), ArchCsvToArray(defaultEmulators, []))
+    archOverlayColorRgb := ArchNormalizeRgbHex(ArchIniRead(presetSection, "OverlayColor", archOverlayColorRgb), archOverlayColorRgb)
+    archBgColor := ArchNormalizeRgbHex(ArchIniRead(presetSection, "BackgroundColor", archBgColor), archBgColor)
+    archVerticalPct := ArchIniReadFloat(presetSection, "VerticalPercent", archVerticalPct)
+    archFontFamily := ArchIniRead(presetSection, "FontFamily", archFontFamily)
+    archFontFallback := ArchIniRead(presetSection, "FontFallback", archFontFallback)
+    archFontSize := ArchIniReadInt(presetSection, "AhkFontSize", archFontSize, 1)
+
+    archOverlayColorBgr := ArchRgbHexToBgr(archOverlayColorRgb, archOverlayColorBgr)
+    archBgColorBgr := ArchRgbHexToBgr(archBgColor, archBgColorBgr)
+}
+
+ArchIniRead(section, key, defaultValue) {
+    global archConfigFile
+
+    IniRead, value, %archConfigFile%, %section%, %key%, %defaultValue%
+    value := Trim(value)
+    if (value = "" || value = "ERROR")
+        return defaultValue
+    return value
+}
+
+ArchIniReadInt(section, key, defaultValue, minValue := "") {
+    value := ArchIniRead(section, key, defaultValue)
+    if (RegExMatch(value, "^-?\d+$")) {
+        value += 0
+        if (minValue = "" || value >= minValue)
+            return value
+    }
+    ArchSetConfigWarning("Invalid " . section . "." . key . "; using default.")
+    return defaultValue
+}
+
+ArchIniReadFloat(section, key, defaultValue) {
+    value := ArchIniRead(section, key, defaultValue)
+    if (RegExMatch(value, "^-?\d+(\.\d+)?$"))
+        return value + 0.0
+    ArchSetConfigWarning("Invalid " . section . "." . key . "; using default.")
+    return defaultValue
+}
+
+ArchSetConfigWarning(message) {
+    global archConfigWarning
+    if (archConfigWarning = "")
+        archConfigWarning := message
+}
+
+ArchIsKnownPreset(preset) {
+    return preset = "RAC1" || preset = "RAC2" || preset = "RAC3"
+}
+
+ArchDefaultDisplayNameForPreset(preset) {
+    if (preset = "RAC2")
+        return "Ratchet & Clank 2"
+    if (preset = "RAC3")
+        return "Ratchet & Clank 3"
+    return "Ratchet & Clank 1"
+}
+
+ArchDefaultEmulatorsForPreset(preset) {
+    if (preset = "RAC2" || preset = "RAC3")
+        return "pcsx2-qt.exe,pcsx2.exe"
+    return "rpcs3.exe"
+}
+
+ArchCsvToArray(csv, fallback := "") {
+    result := []
+    parts := StrSplit(csv, ",")
+    for archCsvIndex, archCsvItem in parts {
+        archCsvItem := Trim(archCsvItem)
+        if (archCsvItem = "")
+            continue
+        if (!RegExMatch(archCsvItem, "i)\.exe$"))
+            archCsvItem .= ".exe"
+        result.Push(archCsvItem)
+    }
+    if (result.Length() = 0 && IsObject(fallback))
+        return fallback
+    return result
+}
+
+ArchNormalizeRgbHex(value, defaultValue) {
+    value := Trim(value)
+    if (SubStr(value, 1, 1) = "#")
+        value := SubStr(value, 2)
+    if (RegExMatch(value, "i)^[0-9a-f]{6}$"))
+        return value
+    if (defaultValue != "")
+        ArchSetConfigWarning("Invalid color value; using default.")
+    if (SubStr(defaultValue, 1, 1) = "#")
+        return SubStr(defaultValue, 2)
+    return defaultValue
+}
+
+ArchRgbHexToBgr(hexValue, defaultValue) {
+    hexValue := ArchNormalizeRgbHex(hexValue, "")
+    if (hexValue = "")
+        return defaultValue
+    r := "0x" . SubStr(hexValue, 1, 2)
+    g := "0x" . SubStr(hexValue, 3, 2)
+    b := "0x" . SubStr(hexValue, 5, 2)
+    return ((b + 0) << 16) | ((g + 0) << 8) | (r + 0)
+}
+
 ArchParseLine(line) {
+    global archOverlayColorBgr
+
     result := {text: "", color: 0}
 
     if (!RegExMatch(line, "^\[(FileLog|Client) at [^\]]+\]:\s*(.*)", m))
@@ -292,17 +467,17 @@ ArchParseLine(line) {
 
     parsedMsg := m2
 
-    ; RAC1 steel blue #7B9EC6 → BGR 0xA88060
+    ; Config colors are RGB hex; Win32 text colors use BGR COLORREF.
     if (InStr(parsedMsg, "test"))
-        colorRef := 0xA88060
+        colorRef := archOverlayColorBgr
     else if (InStr(parsedMsg, "found their"))
-        colorRef := 0xA88060
+        colorRef := archOverlayColorBgr
     else if (InStr(parsedMsg, "completed their goal"))
-        colorRef := 0xA88060
+        colorRef := archOverlayColorBgr
     else if (InStr(parsedMsg, "Congratulations"))
-        colorRef := 0xA88060
+        colorRef := archOverlayColorBgr
     else if (InStr(parsedMsg, "released all remaining"))
-        colorRef := 0xA88060
+        colorRef := archOverlayColorBgr
     else
         return result
 
@@ -354,37 +529,41 @@ ArchShowMessage(text, colorRef) {
 ArchPositionOverlay() {
     global archGuiHwnd, archEmulatorProcesses, archVerticalPct, archTextHwnd
 
-    emuWin := 0
-    for i, proc in archEmulatorProcesses {
-        emuWin := WinExist("ahk_exe " . proc)
-        if (emuWin)
+    archPositionEmuWin := 0
+    for archPositionIndex, archPositionProc in archEmulatorProcesses {
+        archPositionEmuWin := WinExist("ahk_exe " . archPositionProc)
+        if (archPositionEmuWin)
             break
     }
-    if (emuWin) {
-        WinGetPos, wx, wy, ww, wh, ahk_id %emuWin%
+    if (archPositionEmuWin) {
+        WinGetPos, archPositionWindowX, archPositionWindowY, archPositionWindowW, archPositionWindowH, ahk_id %archPositionEmuWin%
     } else {
         SysGet, MonArea, MonitorWorkArea
-        wx := MonAreaLeft
-        wy := MonAreaTop
-        ww := MonAreaRight - MonAreaLeft
-        wh := MonAreaBottom - MonAreaTop
+        archPositionWindowX := MonAreaLeft
+        archPositionWindowY := MonAreaTop
+        archPositionWindowW := MonAreaRight - MonAreaLeft
+        archPositionWindowH := MonAreaBottom - MonAreaTop
     }
 
     ; Get overlay width after text was set
-    WinGetPos,,, ow,, ahk_id %archGuiHwnd%
-    if (ow <= 0)
-        ow := 600
+    WinGetPos,,, archPositionOverlayW,, ahk_id %archGuiHwnd%
+    if (archPositionOverlayW <= 0)
+        archPositionOverlayW := 600
 
     ; Center horizontally, position vertically
-    newX := wx + (ww // 2) - (ow // 2)
-    newY := wy + Floor(wh * archVerticalPct)
+    archPositionNewX := archPositionWindowX + (archPositionWindowW // 2) - (archPositionOverlayW // 2)
+    archPositionNewY := archPositionWindowY + Floor(archPositionWindowH * archVerticalPct)
 
-    WinMove, ahk_id %archGuiHwnd%,, %newX%, %newY%
+    WinMove, ahk_id %archGuiHwnd%,, %archPositionNewX%, %archPositionNewY%
 }
 
 ArchReassertTopmost:
     if (archIsVisible)
         WinSet, AlwaysOnTop, On, ahk_id %archGuiHwnd%
+return
+
+ArchSelfTestExit:
+    ExitApp, 0
 return
 
 ArchHideAfterDelay:
@@ -432,12 +611,12 @@ ArchCleanup() {
 
 ; ── WM_CTLCOLORSTATIC handler ──────────────────────────────────────────────────
 ArchCTLColorStatic(wParam, lParam, msg, hwnd) {
-    global archCtrlColors, archBgBrush, archGuiHwnd
+    global archCtrlColors, archBgBrush, archGuiHwnd, archBgColorBgr
 
     if (hwnd != archGuiHwnd)
         return
 
-    bgColorRef := 0x1E1E1E
+    bgColorRef := archBgColorBgr
     DllCall("SetBkColor", "Ptr", wParam, "UInt", bgColorRef)
 
     if (archCtrlColors.HasKey(lParam))

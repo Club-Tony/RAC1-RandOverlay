@@ -1,8 +1,17 @@
 # RAC RandOverlay - Multi-Game Branch Naming And Overlay Roadmap
 
-**Status:** Planned
+**Status:** In Progress
 **Created:** 2026-04-20
 **Goal:** Reframe the non-main feature work so it clearly covers RAC1, RAC2, and RAC3 overlay support, then identify the next worthwhile improvements for the overlay beyond the current emulator and borderless work.
+
+## Progress Update - 2026-04-25
+
+- Multi-game README, shared `RandOverlay.ini`, AHK preset loading, PowerShell/WPF preset loading, and feedback issue template work are present in the working tree.
+- AHK `#Warn` local/global collisions from label-scope temporary variables were cleaned up after startup exposed an `ow` collision in `ArchPositionOverlay()`.
+- Added `Test-RandOverlay.ps1` as the local validation entry point. It covers Git whitespace, PowerShell parsing, GitHub issue-form shape, AHK `/iLib` parsing, and an AHK startup self-test with a temporary Archipelago log directory.
+- Added a GitHub Actions workflow that installs AutoHotkey v1 and runs `Test-RandOverlay.ps1 -SkipAhkRuntime` on push and pull request events.
+- Local checks passed through `.\Test-RandOverlay.ps1`.
+- Remaining hands-on verification needs emulator/runtime coverage: RAC1 with RPCS3 and at least one RAC2 or RAC3 case with PCSX2.
 
 ## Current Status Snapshot
 

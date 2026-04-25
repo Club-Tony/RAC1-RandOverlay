@@ -6,6 +6,7 @@ echo ============================================
 echo.
 echo  Toggle Overlay:  Ctrl+Alt+A
 echo  Toggle Font:     Ctrl+Alt+F
+echo  Borderless:      Ctrl+Alt+B
 echo.
 echo Starting overlay...
 echo.

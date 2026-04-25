@@ -1,0 +1,43 @@
+name: Validate RandOverlay
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: PowerShell and AutoHotkey checks
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install AutoHotkey v1
+        shell: pwsh
+        run: choco install autohotkey.portable --version=1.1.37.1 -y --no-progress
+
+      - name: Run validation
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          $range = ""
+          if ($env:EVENT_NAME -eq "pull_request" -and $env:PR_BASE_SHA) {
+            $range = "$($env:PR_BASE_SHA)...HEAD"
+          } elseif ($env:BEFORE_SHA -and $env:BEFORE_SHA -notmatch '^0+$') {
+            $range = "$($env:BEFORE_SHA)...HEAD"
+          }
+
+          if ($range) {
+            .\Test-RandOverlay.ps1 -SkipAhkRuntime -GitDiffRange $range
+          } else {
+            .\Test-RandOverlay.ps1 -SkipAhkRuntime
+          }

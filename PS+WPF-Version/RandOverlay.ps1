@@ -36,6 +36,158 @@ $ColorMap = [ordered]@{
     "released all remaining" = $OverlayColor
 }
 
+$ConfigFile = Join-Path (Split-Path -Parent $PSScriptRoot) "RandOverlay.ini"
+$script:ConfigWarning = $null
+
+$PresetDefaults = @{
+    RAC1 = @{
+        DisplayName = "Ratchet & Clank 1"
+        EmulatorProcesses = "rpcs3.exe"
+        OverlayColor = "#80A0D0"
+        BackgroundColor = "#1E1E1E"
+        VerticalPercent = "0.17"
+        FontFamily = "HandelGothic BT"
+        FontFallback = "Bahnschrift"
+        WpfFontSize = "43"
+    }
+    RAC2 = @{
+        DisplayName = "Ratchet & Clank 2"
+        EmulatorProcesses = "pcsx2-qt.exe,pcsx2.exe"
+        OverlayColor = "#80A0D0"
+        BackgroundColor = "#1E1E1E"
+        VerticalPercent = "0.17"
+        FontFamily = "HandelGothic BT"
+        FontFallback = "Bahnschrift"
+        WpfFontSize = "43"
+    }
+    RAC3 = @{
+        DisplayName = "Ratchet & Clank 3"
+        EmulatorProcesses = "pcsx2-qt.exe,pcsx2.exe"
+        OverlayColor = "#80A0D0"
+        BackgroundColor = "#1E1E1E"
+        VerticalPercent = "0.17"
+        FontFamily = "HandelGothic BT"
+        FontFallback = "Bahnschrift"
+        WpfFontSize = "43"
+    }
+}
+
+function Set-ConfigWarning([string]$Message) {
+    if (-not $script:ConfigWarning) { $script:ConfigWarning = $Message }
+    Write-Log $Message
+}
+
+function Read-IniFile([string]$Path) {
+    $ini = @{}
+    $section = $null
+    foreach ($line in Get-Content -LiteralPath $Path -ErrorAction Stop) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith(";") -or $trimmed.StartsWith("#")) { continue }
+        if ($trimmed -match '^\[(.+)\]$') {
+            $section = $Matches[1].Trim()
+            if (-not $ini.ContainsKey($section)) { $ini[$section] = @{} }
+            continue
+        }
+        if ($section -and $trimmed -match '^([^=]+)=(.*)$') {
+            $ini[$section][$Matches[1].Trim()] = $Matches[2].Trim()
+        }
+    }
+    return $ini
+}
+
+function Get-IniValue([hashtable]$Ini, [string]$Section, [string]$Key, [string]$Default) {
+    if ($Ini.ContainsKey($Section) -and $Ini[$Section].ContainsKey($Key)) {
+        $value = [string]$Ini[$Section][$Key]
+        if ($value.Trim()) { return $value.Trim() }
+    }
+    return $Default
+}
+
+function Get-ConfigInt([hashtable]$Ini, [string]$Section, [string]$Key, [int]$Default, [int]$Minimum = 0) {
+    $raw = Get-IniValue $Ini $Section $Key ([string]$Default)
+    $value = 0
+    if ([int]::TryParse($raw, [ref]$value) -and $value -ge $Minimum) { return $value }
+    Set-ConfigWarning "Invalid $Section.$Key; using default."
+    return $Default
+}
+
+function Get-ConfigDouble([hashtable]$Ini, [string]$Section, [string]$Key, [double]$Default) {
+    $raw = Get-IniValue $Ini $Section $Key ([string]$Default)
+    $value = 0.0
+    if ([double]::TryParse($raw, [ref]$value)) { return $value }
+    Set-ConfigWarning "Invalid $Section.$Key; using default."
+    return $Default
+}
+
+function Get-ConfigHex([hashtable]$Ini, [string]$Section, [string]$Key, [string]$Default) {
+    $raw = Get-IniValue $Ini $Section $Key $Default
+    if ($raw -match '^#?[0-9a-fA-F]{6}$') {
+        if ($raw.StartsWith("#")) { return $raw }
+        return "#$raw"
+    }
+    Set-ConfigWarning "Invalid $Section.$Key; using default."
+    return $Default
+}
+
+function Get-ConfigCsv([hashtable]$Ini, [string]$Section, [string]$Key, [string]$Default) {
+    $raw = Get-IniValue $Ini $Section $Key $Default
+    $items = @($raw -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($items.Count -gt 0) { return $items }
+    Set-ConfigWarning "Invalid $Section.$Key; using default."
+    return @($Default -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+
+$Ini = @{}
+if (Test-Path -LiteralPath $ConfigFile) {
+    try {
+        $Ini = Read-IniFile $ConfigFile
+    } catch {
+        Set-ConfigWarning "Could not read RandOverlay.ini; using built-in RAC1 defaults."
+    }
+} else {
+    Set-ConfigWarning "RandOverlay.ini not found; using built-in RAC1 defaults."
+}
+
+$ActivePreset = (Get-IniValue $Ini "General" "ActivePreset" "RAC1").ToUpperInvariant()
+if (-not $PresetDefaults.ContainsKey($ActivePreset)) {
+    Set-ConfigWarning "Unknown ActivePreset '$ActivePreset'; using RAC1 defaults."
+    $ActivePreset = "RAC1"
+}
+
+$PresetSection = "Preset.$ActivePreset"
+$PresetDefault = $PresetDefaults[$ActivePreset]
+
+$LogDir           = Get-IniValue $Ini "General" "LogDir" "C:\ProgramData\Archipelago\logs"
+$LauncherExe      = Get-IniValue $Ini "General" "LauncherExe" "C:\ProgramData\Archipelago\ArchipelagoLauncher.exe"
+$DisplayMs        = Get-ConfigInt $Ini "General" "DisplayMs" 5000 1
+$DisplaySeconds   = $DisplayMs / 1000.0
+$FadeInMs         = Get-ConfigInt $Ini "General" "FadeInMs" 300 0
+$FadeOutMs        = Get-ConfigInt $Ini "General" "FadeOutMs" 500 0
+$PollMs           = Get-ConfigInt $Ini "General" "PollMs" 1500 1
+$DisplayName      = Get-IniValue $Ini $PresetSection "DisplayName" $PresetDefault.DisplayName
+$FontFamily       = Get-IniValue $Ini $PresetSection "FontFamily" $PresetDefault.FontFamily
+$FontFallback     = Get-IniValue $Ini $PresetSection "FontFallback" $PresetDefault.FontFallback
+$script:currentFont = $null
+$FontSize         = Get-ConfigInt $Ini $PresetSection "WpfFontSize" ([int]$PresetDefault.WpfFontSize) 1
+$VerticalPercent  = Get-ConfigDouble $Ini $PresetSection "VerticalPercent" ([double]$PresetDefault.VerticalPercent)
+$BgColor          = Get-ConfigHex $Ini $PresetSection "BackgroundColor" $PresetDefault.BackgroundColor
+$BgOpacity        = 0.80
+$CornerRadius     = 12
+$OverlayColor     = Get-ConfigHex $Ini $PresetSection "OverlayColor" $PresetDefault.OverlayColor
+$EmulatorProcesses = @(Get-ConfigCsv $Ini $PresetSection "EmulatorProcesses" $PresetDefault.EmulatorProcesses | ForEach-Object {
+    $_ -replace '\.exe$', ''
+})
+
+Write-Log "Active preset: $ActivePreset ($DisplayName)"
+
+$ColorMap = [ordered]@{
+    "test"                   = $OverlayColor
+    "found their"            = $OverlayColor
+    "completed their goal"   = $OverlayColor
+    "Congratulations"        = $OverlayColor
+    "released all remaining" = $OverlayColor
+}
+
 # ── Assemblies ─────────────────────────────────────────────────────────────────
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
@@ -211,12 +363,12 @@ function Show-Message($text, $color) {
     $script:activeBrush.Freeze()
     $script:textBlock.Foreground = $script:activeBrush
 
-    # Fade in (300ms)
+    # Fade in using the active preset/config timing.
     $script:window.Opacity = 0
     $fadeIn = New-Object System.Windows.Media.Animation.DoubleAnimation
     $fadeIn.From = 0.0
     $fadeIn.To = 1.0
-    $fadeIn.Duration = New-Object System.Windows.Duration([TimeSpan]::FromMilliseconds(300))
+    $fadeIn.Duration = New-Object System.Windows.Duration([TimeSpan]::FromMilliseconds($FadeInMs))
     $fadeIn.FillBehavior = [System.Windows.Media.Animation.FillBehavior]::HoldEnd
     $script:window.BeginAnimation([System.Windows.Window]::OpacityProperty, $fadeIn)
 
@@ -230,7 +382,7 @@ function Show-Message($text, $color) {
             $fadeOut = New-Object System.Windows.Media.Animation.DoubleAnimation
             $fadeOut.From = 1.0
             $fadeOut.To = 0.0
-            $fadeOut.Duration = New-Object System.Windows.Duration([TimeSpan]::FromMilliseconds(500))
+            $fadeOut.Duration = New-Object System.Windows.Duration([TimeSpan]::FromMilliseconds($FadeOutMs))
             $fadeOut.FillBehavior = [System.Windows.Media.Animation.FillBehavior]::HoldEnd
             $fadeOut.Add_Completed({
                 if ($script:window) {
@@ -418,10 +570,10 @@ $script:window.Add_Loaded({
             if ($ctrl -and $alt -and $fKey) {
                 if (-not $script:fkDown) {
                     $script:fkDown = $true
-                    if ($script:currentFont -eq "HandelGothic BT") {
-                        $script:currentFont = "Bahnschrift"
+                    if ($script:currentFont -eq $FontFamily) {
+                        $script:currentFont = $FontFallback
                     } else {
-                        $script:currentFont = "HandelGothic BT"
+                        $script:currentFont = $FontFamily
                     }
                     $script:textBlock.FontFamily = New-Object System.Windows.Media.FontFamily($script:currentFont)
                     Write-Host "  >> Font: $($script:currentFont)"
@@ -567,7 +719,8 @@ Start-Sleep -Milliseconds 100  # Brief pause for window composition
 $script:running = $true
 $script:window.Add_Closed({ $script:running = $false })
 # ── Show startup notification ──────────────────────────────────────────────────
-Show-Message "Archipelago Overlay ready - waiting for events" $OverlayColor
+$startupMessage = if ($script:ConfigWarning) { $script:ConfigWarning } else { "Archipelago Overlay ready - waiting for events" }
+Show-Message $startupMessage $OverlayColor
 Write-Host ">> Startup overlay shown"
 Write-Log "Startup overlay shown"
 

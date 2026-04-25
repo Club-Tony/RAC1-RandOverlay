@@ -1,0 +1,71 @@
+name: Overlay Feedback
+description: Share short testing feedback for the RAC overlay.
+title: "[Feedback]: "
+labels: ["feedback", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing the overlay. Short feedback is easiest to turn into TODOs.
+  - type: input
+    id: summary
+    attributes:
+      label: Short feedback summary
+      description: About 100 characters is ideal. GitHub does not enforce a hard max length here.
+      placeholder: "Example: RAC2 overlay appears too low in PCSX2 borderless mode"
+    validations:
+      required: true
+  - type: dropdown
+    id: game
+    attributes:
+      label: Game tested
+      options:
+        - RAC1
+        - RAC2
+        - RAC3
+        - Not game-specific
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - AHK
+        - PowerShell/WPF
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: feedback-type
+    attributes:
+      label: Feedback type
+      options:
+        - Bug
+        - Preset/config
+        - Overlay positioning
+        - Borderless/fullscreen
+        - Quality-of-life idea
+        - Other
+    validations:
+      required: false
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Include what happened, what you expected, emulator/window mode, and any setup notes.
+      placeholder: |
+        What happened?
+        What did you expect?
+        Emulator/window mode:
+        ActivePreset:
+    validations:
+      required: false
+  - type: upload
+    id: attachments
+    attributes:
+      label: Screenshots, logs, or config snippets
+      description: Optional, but useful for positioning, borderless, and config feedback.
+    validations:
+      required: false
