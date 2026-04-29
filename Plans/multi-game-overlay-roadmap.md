@@ -1,6 +1,6 @@
 # RAC RandOverlay - Multi-Game Branch Naming And Overlay Roadmap
 
-**Status:** In Progress
+**Status:** In Progress (implementation complete 2026-04-25; emulator/runtime verification pending)
 **Created:** 2026-04-20
 **Goal:** Reframe the non-main feature work so it clearly covers RAC1, RAC2, and RAC3 overlay support, then identify the next worthwhile improvements for the overlay beyond the current emulator and borderless work.
 
