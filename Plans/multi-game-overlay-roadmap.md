@@ -23,7 +23,7 @@ The repo currently has two practical signals:
 Current branch state:
 
 - `main` is still tied to the older RAC1 presentation.
-- `feature/multi-emulator-borderless-overlay` is the active feature branch that is already moving toward broader compatibility.
+- `rac123-support` is the active feature branch that is already moving toward broader compatibility.
 
 That means naming has fallen behind scope.
 
@@ -35,15 +35,9 @@ If the branch is intended to represent support for RAC1, RAC2, and RAC3 workflow
 
 ## Recommended Branch Rename
 
-Preferred branch naming options:
+Use this exact branch name:
 
-1. `feature/multi-game-overlay-support`
-2. `feature/rac123-overlay-support`
-3. `feature/multi-game-borderless-overlay`
-
-Recommended choice:
-
-`feature/multi-game-overlay-support`
+`rac123-support`
 
 Reasoning:
 
