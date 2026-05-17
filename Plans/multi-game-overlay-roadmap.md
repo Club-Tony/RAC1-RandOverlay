@@ -126,6 +126,17 @@ Treat the milestone as complete only when:
 4. Borderless toggle still works after the naming and preset refactor.
 5. No regression appears in the existing AHK and PowerShell/WPF entry points.
 
+### Automated Verification Run - 2026-05-16
+
+Unattended sweep on branch `rac123-support`. Tooling: PowerShell + AutoHotkey v1.1.37.02 (real runtime, not skipped).
+
+- **Criterion 1 — branch scope: PASS.** Active branch `rac123-support` clearly implies RAC1/2/3 multi-game scope, not a single game.
+- **Criterion 2 — README multi-game language: PASS.** README documents experimental RAC1/RAC2/RAC3 preset support, the PCSX2/RPCS3 process-name table, and the `ActivePreset=RAC1|RAC2|RAC3` switch.
+- **Criterion 5 — no regression in entry points: PASS.** `Test-RandOverlay.ps1 -AutoHotkeyPath <AHK v1>` ran the full suite, all 7 checks green and exit 0: Resolve AutoHotkey, Git diff whitespace, PowerShell parser, GitHub issue-form shape, GitHub Actions workflow shape, **AHK /iLib parse** (live AHK v1), **AHK startup self-test**. This is the same suite the `.github/workflows/validate.yml` CI runs (here with the AHK runtime *enabled*, exceeding CI which uses `-SkipAhkRuntime`).
+- **Criteria 3 & 4 — KNOWN-MANUAL.** Overlay positioning over an RAC1 (RPCS3) case and an RAC2/RAC3 (PCSX2) case, and the borderless-toggle behavior after the preset refactor, require running the emulators and visually confirming overlay placement. Cannot be automated headlessly — these stay on the manual queue and are the only gates remaining.
+
+Net: 3 of 5 completion criteria are auto-verified PASS; the milestone is blocked solely on the two emulator/visual criteria.
+
 ## Risks
 
 - The repo name may continue to confuse users even if the branch name is fixed.
