@@ -1,6 +1,8 @@
 #Requires AutoHotkey v1
 #NoEnv
 #SingleInstance, Force
+#Include %A_ScriptDir%\Lib\ScriptSingleton.ahk
+EnsureScriptSingleton()
 #Warn
 SendMode Input
 SetWorkingDir %A_ScriptDir%
