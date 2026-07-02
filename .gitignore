@@ -1,2 +1,5 @@
-Vulkan-DLL-Version
+# Vulkan overlay: track sources; ignore build outputs + vendored deps (imgui, minhook clones)
+Vulkan-DLL-Version/build/
+Vulkan-DLL-Version/deps/
+Vulkan-DLL-Version/*.log
 PS+WPF-Version/RandOverlay.log

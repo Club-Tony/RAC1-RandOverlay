@@ -1,0 +1,143 @@
+/*
+ * RandOverlay headless unit tests — the pure-logic parts of the layer that do
+ * NOT need a GPU or emulator: the ini reader (config.h), the process gate
+ * (process_gate.h), and the Archipelago log parser (log_reader.h).
+ *
+ * Build + run: tests\run_tests.bat   (or see that file for the g++ line)
+ * Exit code 0 = all passed.
+ */
+#include <cstdio>
+#include <string>
+#include <windows.h>
+#include "config.h"
+#include "process_gate.h"
+#include "log_reader.h"
+#include "font_resolver.h"
+#include "arch_client_check.h"
+
+static int g_pass = 0, g_fail = 0;
+#define CHECK(cond, msg) do { if (cond) { g_pass++; printf("  [PASS] %s\n", msg); } \
+                              else       { g_fail++; printf("  [FAIL] %s\n", msg); } } while (0)
+static bool approx(float a, float b) { float d = a - b; return d < 0.01f && d > -0.01f; }
+
+int main(int argc, char** argv) {
+    printf("=== RandOverlay unit tests ===\n\n");
+
+    // ── process gate parsing ──────────────────────────────────────────────
+    printf("[process_gate]\n");
+    CHECK(rogate::listContains("rpcs3.exe", "rpcs3.exe"),                 "rpcs3.exe matches rpcs3.exe");
+    CHECK(rogate::listContains("pcsx2-qt.exe,pcsx2.exe", "pcsx2.exe"),    "comma list matches pcsx2.exe");
+    CHECK(rogate::listContains("pcsx2-qt.exe, pcsx2.exe", "pcsx2-qt.exe"),"whitespace-tolerant match");
+    CHECK(rogate::listContains("RPCS3.EXE", "rpcs3.exe"),                 "case-insensitive (list uppercased)");
+    CHECK(!rogate::listContains("rpcs3.exe", "notepad.exe"),             "notepad.exe does NOT match");
+    CHECK(!rogate::listContains("", "rpcs3.exe"),                        "empty list matches nothing");
+
+    // ── config / ini parsing ──────────────────────────────────────────────
+    printf("[config] ini=%s\n", argc > 1 ? argv[1] : "(none supplied)");
+    if (argc > 1) SetEnvironmentVariableA("RANDOVERLAY_INI", argv[1]);
+    RandOverlayConfig cfg; cfg.load();
+    CHECK(cfg.loaded,                          "ini loaded");
+    CHECK(cfg.activePreset == "RAC1",          "ActivePreset = RAC1");
+    CHECK(approx(cfg.overlayColor[0], 0.502f) && approx(cfg.overlayColor[1], 0.627f) &&
+          approx(cfg.overlayColor[2], 0.816f), "OverlayColor #80A0D0 -> (0.502,0.627,0.816)");
+    CHECK(approx(cfg.bgColor[0], 0.118f),      "BackgroundColor #1E1E1E -> ~0.118");
+    CHECK(approx(cfg.verticalPercent, 0.17f),  "VerticalPercent = 0.17");
+    CHECK(cfg.displayMs == 5000,               "DisplayMs = 5000");
+    CHECK(cfg.pollMs == 1500,                  "PollMs = 1500 (parity)");
+    CHECK(cfg.fadeInMs == 300,                 "FadeInMs = 300 (parity)");
+    CHECK(cfg.fadeOutMs == 500,                "FadeOutMs = 500 (parity)");
+    CHECK(cfg.fontSize == 43,                  "WpfFontSize = 43");
+    CHECK(cfg.emulatorProcs.find("rpcs3.exe") != std::string::npos, "RAC1 EmulatorProcesses has rpcs3.exe");
+    CHECK(cfg.launcherExe.find("ArchipelagoLauncher.exe") != std::string::npos, "LauncherExe read");
+    CHECK(cfg.fontFamily == "HandelGothic BT",  "FontFamily = HandelGothic BT");
+    CHECK(cfg.fontFallback == "Bahnschrift",    "FontFallback = Bahnschrift");
+    CHECK(cfg.clientComponent == "Text Client", "RAC1 ClientComponent = Text Client");
+
+    // Preset-derived ClientComponent default (RAC3 preset, no explicit key)
+    {
+        char tmpP[MAX_PATH]; GetTempPathA(MAX_PATH, tmpP);
+        std::string mini = std::string(tmpP) + "randoverlay_mini.ini";
+        FILE* f = fopen(mini.c_str(), "w");
+        if (f) { fprintf(f, "[General]\nActivePreset=RAC3\n"); fclose(f); }
+        SetEnvironmentVariableA("RANDOVERLAY_INI", mini.c_str());
+        RandOverlayConfig c3; c3.load();
+        CHECK(c3.clientComponent == "Ratchet and Clank 3 Client",
+              "RAC3 default ClientComponent derived from preset");
+        DeleteFileA(mini.c_str());
+        if (argc > 1) SetEnvironmentVariableA("RANDOVERLAY_INI", argv[1]); // restore
+    }
+
+    { float c[3] = {9,9,9}; CHECK(!rocfg_detail::parseHexColor("#ZZZZZZ", c), "malformed hex rejected"); }
+    { float c[3] = {0,0,0}; CHECK(rocfg_detail::parseHexColor("#FF0000", c) && approx(c[0],1.0f) &&
+                                  approx(c[1],0.0f) && approx(c[2],0.0f), "#FF0000 -> (1,0,0)"); }
+
+    // ── Archipelago log parsing ───────────────────────────────────────────
+    printf("[log_reader]\n");
+    char tmp[MAX_PATH]; GetTempPathA(MAX_PATH, tmp);
+    std::string dir = std::string(tmp) + "randoverlay_test_logs";
+    CreateDirectoryA(dir.c_str(), NULL);
+    std::string logf = dir + "\\Launcher_unittest.txt";
+    { FILE* f = fopen(logf.c_str(), "w"); if (f) { fprintf(f, "seed line ignored\n"); fclose(f); } }
+
+    LogReader lr(dir); // seeds on the existing 1 line
+    { FILE* f = fopen(logf.c_str(), "a"); if (f) { fprintf(f, "[Client at 12:00:00]: Ratchet found their Hydrodisplacer (RAC1)\n"); fclose(f); } }
+    auto msgs = lr.poll();
+    CHECK(!msgs.empty(), "poll() picks up the appended event line");
+    if (!msgs.empty()) {
+        printf("    parsed: \"%s\"\n", msgs.back().text.c_str());
+        CHECK(msgs.back().text.find("found their") != std::string::npos, "message keeps 'found their'");
+        CHECK(msgs.back().text.find("(RAC1)") == std::string::npos,      "parenthesized suffix stripped");
+    }
+    { FILE* f = fopen(logf.c_str(), "a"); if (f) { fprintf(f, "[Client at 12:00:01]: routine chatter line\n"); fclose(f); } }
+    CHECK(lr.poll().empty(), "non-event chatter is ignored");
+
+    DeleteFileA(logf.c_str());
+    RemoveDirectoryA(dir.c_str());
+
+    // ── Log selection parity (AHK/PS: any *.txt except Generate_/Server_) ─
+    printf("[log_reader selection parity]\n");
+    std::string dir2 = std::string(tmp) + "randoverlay_test_logs2";
+    CreateDirectoryA(dir2.c_str(), NULL);
+    std::string clientLog = dir2 + "\\RAC2Client_unittest.txt"; // non-Launcher_ name
+    std::string genLog    = dir2 + "\\Generate_unittest.txt";
+    { FILE* f = fopen(clientLog.c_str(), "w"); if (f) { fprintf(f, "seed\n"); fclose(f); } }
+    Sleep(30); // ensure Generate_ has the NEWER write time
+    { FILE* f = fopen(genLog.c_str(), "w"); if (f) { fprintf(f, "[Client at 1:00:00]: decoy found their trap (X)\n"); fclose(f); } }
+
+    LogReader lr2(dir2);
+    { FILE* f = fopen(clientLog.c_str(), "a"); if (f) { fprintf(f, "[Client at 1:00:01]: Ratchet found their Persuader (RAC2)\n"); fclose(f); } }
+    auto msgs2 = lr2.poll();
+    CHECK(!msgs2.empty(), "non-Launcher_ client log is tailed");
+    if (!msgs2.empty())
+        CHECK(msgs2.back().text.find("Persuader") != std::string::npos,
+              "event came from client log, not the newer Generate_ decoy");
+
+    DeleteFileA(clientLog.c_str());
+    DeleteFileA(genLog.c_str());
+    RemoveDirectoryA(dir2.c_str());
+
+    // ── Font resolver ─────────────────────────────────────────────────────
+    printf("[font_resolver]\n");
+    std::string bahn = rofont::resolveFamilyToFile("Bahnschrift"); // ships with Win10/11
+    CHECK(!bahn.empty() && GetFileAttributesA(bahn.c_str()) != INVALID_FILE_ATTRIBUTES,
+          "Bahnschrift resolves to an existing file");
+    if (!bahn.empty()) printf("    Bahnschrift -> %s\n", bahn.c_str());
+    std::string handel = rofont::resolveFamilyToFile("HandelGothic BT");
+    if (!handel.empty()) {
+        CHECK(GetFileAttributesA(handel.c_str()) != INVALID_FILE_ATTRIBUTES,
+              "HandelGothic BT resolves to an existing file");
+        printf("    HandelGothic BT -> %s\n", handel.c_str());
+    } else {
+        printf("    (HandelGothic BT not installed on this device - fallback path will be used)\n");
+    }
+    CHECK(rofont::resolveFamilyToFile("Definitely Not A Font 123").empty(),
+          "unknown family resolves to empty");
+    CHECK(rofont::normalize("Handel Gothic BT") == "handelgothicbt", "normalize strips spaces/case");
+
+    // ── Archipelago process check (informational — depends on live state) ─
+    printf("[arch_client_check]\n");
+    printf("    isArchipelagoRunning() = %s\n", roarch::isArchipelagoRunning() ? "true" : "false");
+
+    printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
+    return g_fail ? 1 : 0;
+}
