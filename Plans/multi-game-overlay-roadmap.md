@@ -4,6 +4,14 @@
 **Created:** 2026-04-20
 **Goal:** Reframe the non-main feature work so it clearly covers RAC1, RAC2, and RAC3 overlay support, then identify the next worthwhile improvements for the overlay beyond the current emulator and borderless work.
 
+## Plan Relationship And Scope
+
+See [Plans/README.md](README.md) for the canonical plan map and shared manual-test sequence.
+
+This is the umbrella product/configuration plan. It owns RAC1/RAC2/RAC3 scope, branch and repository naming, the shared `RandOverlay.ini` contract, README framing, and behavior of the AHK and PowerShell/WPF external-window runtimes. The [Vulkan layer plan](vulkan-overlay-works-no-matter-what.md) is intentionally separate: it consumes these presets and display settings but owns in-frame Vulkan rendering, exclusive-fullscreen behavior, and Vulkan-specific build/runtime safety.
+
+The branch rename, README reframing, presets, and shared configuration described in the early sections below are complete. Their original rationale is retained as decision history. Phases 4 and 5 and the additional overlay ideas remain optional follow-on backlog; they are not blockers for this plan's current manual-only closeout.
+
 ## Progress Update - 2026-04-25
 
 - Multi-game README, shared `RandOverlay.ini`, AHK preset loading, PowerShell/WPF preset loading, and feedback issue template work are present in the working tree.
@@ -15,35 +23,21 @@
 
 ## Current Status Snapshot
 
-The repo currently has two practical signals:
+The repository name and default `main` branch still carry the older RAC1-specific presentation. On `rac123-support`, however, naming and implementation are aligned:
 
-- The repository name and README still present the project as RAC1-specific.
-- The non-main feature branch already moved beyond that framing by adding broader emulator support and borderless-window behavior.
+- The branch name explicitly covers RAC1, RAC2, and RAC3.
+- The branch README describes experimental multi-game support and the RPCS3/PCSX2 process mappings.
+- Shared presets are implemented for the AHK, PowerShell/WPF, and Vulkan runtimes.
 
-Current branch state:
+The remaining naming decision is optional repository-level generalization after broader emulator validation.
 
-- `main` is still tied to the older RAC1 presentation.
-- `rac123-support` is the active feature branch that is already moving toward broader compatibility.
+## Branch Naming Decision — Completed
 
-That means naming has fallen behind scope.
-
-## Immediate Naming Problem
-
-The active non-main branch name is accurate about emulator handling, but it does not clearly signal game-family scope.
-
-If the branch is intended to represent support for RAC1, RAC2, and RAC3 workflows, rename it before more work accumulates.
-
-## Recommended Branch Rename
-
-Use this exact branch name:
+The selected branch name is:
 
 `rac123-support`
 
-Reasoning:
-
-- It is broad enough for emulator and UI work.
-- It does not lock the branch to borderless mode only.
-- It makes RAC2 and RAC3 inclusion obvious without being overly verbose.
+It is broad enough for emulator and UI work, does not lock the branch to borderless mode, and makes RAC2/RAC3 inclusion explicit. Commit `8192b00` completed this rename; no branch-naming action remains.
 
 ## Repo-Level Naming Follow-Up
 
@@ -105,16 +99,16 @@ These are not all mandatory, but they are the most plausible next upgrades:
 7. Separate fullscreen-handling logic for RPCS3 and PCSX2 if their window behavior diverges.
 8. Optional "pin overlay to current monitor" behavior for multi-monitor setups.
 
-## Recommended Next Milestone
+## Implemented Milestone And Remaining Gate
 
-Prioritize the smallest coherent package:
+The smallest coherent package is now in place:
 
-1. Rename the active non-main branch to a multi-game name.
-2. Update README and repo wording to stop implying RAC1-only scope.
-3. Add a small config file for game/emulator presets.
-4. Smoke-test RAC1, RAC2, and RAC3 scenarios against the supported emulator windows.
+1. **Complete:** rename the active non-main branch to `rac123-support`.
+2. **Complete:** update README and branch wording for experimental RAC1/RAC2/RAC3 support.
+3. **Complete:** add shared game/emulator presets in `RandOverlay.ini` and consume them from both external-window runtimes.
+4. **Remaining manual gate:** smoke-test RAC1 on RPCS3 and at least one RAC2/RAC3 case on PCSX2, including borderless toggle/restore.
 
-That would align repo language, branch language, and actual behavior.
+The branch language, documentation, and implementation are aligned. Completion now depends only on recording the manual runtime evidence.
 
 ## Verification
 

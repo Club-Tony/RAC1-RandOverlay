@@ -5,11 +5,19 @@
 **Repo:** RAC1-RandOverlay (`github.com/Club-Tony/RAC1-RandOverlay`) — personal
 **Goal:** Finish the `Vulkan-DLL-Version` so Archipelago event text renders *inside* the emulator frame via an implicit Vulkan layer — working in exclusive fullscreen, borderless, and windowed on both RPCS3 (RAC1) and PCSX2 (RAC2/RAC3).
 
-## Context
+## Plan Relationship And Scope
+
+See [Plans/README.md](README.md) for the canonical plan map and shared manual-test sequence, and the [multi-game overlay roadmap](multi-game-overlay-roadmap.md) for the shared RAC1/RAC2/RAC3 product and configuration contract.
+
+This is a renderer-specific plan. It consumes `RandOverlay.ini`, emulator process mappings, log-source rules, and display settings from the multi-game track. It owns only the implicit Vulkan layer, in-frame ImGui rendering, exclusive-fullscreen behavior, and Vulkan-specific build, install, diagnostics, and safety. Shared message/log UX changes belong in the multi-game track and should be implemented with parity here rather than maintained as a second Vulkan backlog.
+
+All implementation work items in this document were completed on 2026-07-01. The only remaining gates are the real-emulator/fullscreen and Archipelago Launcher label checks in the status line and verification section.
+
+## Historical Starting Point — Superseded By The Validation Log Below
 
 The overlay shows Archipelago randomizer events over the game. The two shipping runtimes — `RandOverlay.ahk` and `PS+WPF-Version` — draw a translucent click-through **window** on top of the emulator. A top-most window **cannot draw over an exclusive-fullscreen Vulkan swapchain**, so those versions only work in borderless/windowed. The `Vulkan-DLL-Version` exists to fix exactly that: draw the text into the game's own frame at present time, so it works no matter the display mode.
 
-Two Vulkan code paths were started but **neither renders anything real today**:
+At plan creation, two Vulkan code paths had been started but **neither rendered anything real**:
 
 - **Implicit layer** (`src/layer.cpp`, `RandOverlay_layer.json`) — the correct in-dispatch-chain approach. The fresh `build/layer_debug.log` (2026-07-01 00:21) shows it loads and intercepts `vkCreateInstance` + `vkCreateDevice`, then **stops** — no `vkCreateSwapchainKHR`, no present. So `SetupRender` never runs, `g_renderReady` stays false, and present just passes through. Even when it does draw, it only draws a placeholder colored bar via `vkCmdClearAttachments` — no text.
 - **MinHook injected DLL** (`src/overlay.cpp`, `src/injector.cpp`) — `build/overlay_debug.log` shows the DLL injects and hooks the loader-exported `vulkan-1.dll!vkQueuePresentKHR`, but the `HookedPresent` callback **never fires** ("First present!" never logged). RPCS3 was already running and had resolved its device-level present pointer via `vkGetDeviceProcAddr` *before* injection, so it never calls the loader export the hook sits on. Late injection can't catch already-resolved device calls. It also casts `(VkDevice)queue` (wrong) and has an empty draw pass (`// TODO: ImGui`).
@@ -86,7 +94,9 @@ Aligned the layer's message display with the AHK and PS+WPF runtimes (compared a
 - Remaining gate unchanged: real RPCS3/PCSX2 exclusive-fullscreen run + validation layer.
   Also verify the RAC2/RAC3 `ClientComponent` names match the Launcher UI exactly on Yes.
 
-## Scope / Work Items (in order)
+## Completed Implementation Record (original work-item order)
+
+The six items below are retained to explain the implemented architecture and review boundaries. They are complete in `dc86da4`; they are not the next-action queue. Remaining actions are the manual checks under **Verification**.
 
 ### 1. Diagnose why the layer stops at `vkCreateDevice`
 Resolve this before trusting rendering. Add verbose logging to `RandOverlay_GetInstanceProcAddr`/`GetDeviceProcAddr` (log every `pName`) and at the top of `RandOverlay_CreateSwapchainKHR`/`RandOverlay_QueuePresentKHR`. Rebuild and run RPCS3 **with a game booted to actual rendering** (the swapchain isn't created until frames present — the truncated log is most likely a session that never reached gameplay). If still not routed, verify `InitDeviceDispatch` resolves every function with no nulls (log any null) and that both proc-addr entry points return the hooks.
