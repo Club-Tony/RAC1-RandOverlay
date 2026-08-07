@@ -1,6 +1,6 @@
 # RAC RandOverlay — Vulkan Layer Overlay That Works No Matter What
 
-**Status:** In Progress — layer-coexistence defect found 2026-08-06. Gate (2) is CLOSED (RAC2/RAC3 `ClientComponent` names verified against the installed apworlds; RAC1 corrected). Gate (1) is conditionally unblocked: the layer renders correctly and exits cleanly (~25k frames) when it is the **only** layer above the ICD, but faults on the first present when another layer is below it in the chain — OBS's always-registered `VK_LAYER_OBS_HOOK` gives `0xC0000005`, the Khronos validation layer gives `0xC0000409` with zero validation errors. Root cause is characterised but not isolated; the loader-chain-advance code was checked and is correct. One open confound must be settled first: these runs loaded the layer via `VK_ADD_IMPLICIT_LAYER_PATH` rather than `install_layer.bat`, and implicit-layer **order** determines whether this happens at all. See **Regression — 2026-08-06**.
+**Status:** Awaiting Manual Action — 2026-08-06 pass: gate (2) CLOSED (RAC2/RAC3 `ClientComponent` names verified against the installed apworlds; RAC1 corrected to its own apworld client), build fixed (`ar` was not pinned to the x64 toolchain), 34/34 unit tests, and the layer verified end-to-end on the mock host **with OBS Studio running and its `VK_LAYER_OBS_HOOK` active** — 27704 frames, clean exit, both Archipelago events rendered. Gate (1), the real RPCS3/PCSX2 exclusive-fullscreen run, is unblocked and remains the only gate to Completed. One non-blocking defect is open: the layer is incompatible with the Khronos validation layer (`0xC0000409`, zero validation errors), so the optional validation audit of the three residual notes could not be performed.
 **Created:** 2026-07-01
 **Repo:** RAC1-RandOverlay (`github.com/Club-Tony/RAC1-RandOverlay`) — personal
 **Goal:** Finish the `Vulkan-DLL-Version` so Archipelago event text renders *inside* the emulator frame via an implicit Vulkan layer — working in exclusive fullscreen, borderless, and windowed on both RPCS3 (RAC1) and PCSX2 (RAC2/RAC3).
@@ -11,7 +11,7 @@ See [Plans/README.md](README.md) for the canonical plan map and shared manual-te
 
 This is a renderer-specific plan. It consumes `RandOverlay.ini`, emulator process mappings, log-source rules, and display settings from the multi-game track. It owns only the implicit Vulkan layer, in-frame ImGui rendering, exclusive-fullscreen behavior, and Vulkan-specific build, install, diagnostics, and safety. Shared message/log UX changes belong in the multi-game track and should be implemented with parity here rather than maintained as a second Vulkan backlog.
 
-All implementation work items in this document were completed on 2026-07-01. As of 2026-08-06 the Launcher-label gate is closed, but a blocking regression in the active present path was found and must be fixed before the real-emulator/fullscreen gate can be attempted — see **Regression — 2026-08-06**.
+All implementation work items in this document were completed on 2026-07-01. As of 2026-08-06 the Launcher-label gate is closed and the layer is verified to coexist with the OBS capture hook; the real-emulator/fullscreen run is the only remaining gate — see **Verification Pass — 2026-08-06**.
 
 ## Historical Starting Point — Superseded By The Validation Log Below
 
@@ -94,7 +94,7 @@ Aligned the layer's message display with the AHK and PS+WPF runtimes (compared a
 - Remaining gate unchanged: real RPCS3/PCSX2 exclusive-fullscreen run + validation layer.
   Also verify the RAC2/RAC3 `ClientComponent` names match the Launcher UI exactly on Yes.
 
-## Regression — 2026-08-06 (validation-layer pass)
+## Verification Pass — 2026-08-06 (build, tests, OBS coexistence, validation)
 
 Ran the deterministic half of the Verification section on [dev-machine]. Toolchain intact:
 `C:\mingw64\bin\g++` (GCC 14.2.0, x86_64-w64-mingw32), Vulkan SDK `1.4.341.1` including
@@ -113,109 +113,84 @@ is now clean: layer DLL, MinHook, `overlay.dll`, `injector.exe`.
 - Unit tests: **34/34 pass** (`tests\run_tests.bat`), including the font resolver
   (`HandelGothic BT` → `…\Fonts\HandelGo.ttf`) and log-selection parity cases.
 
-### The layer terminates the host at first present
+### What happened: a self-inflicted test-harness fault, not a product defect
 
-Isolation matrix, mock host built AS `rpcs3.exe`, `MOCK_SECONDS=6`, layer supplied via
-`VK_ADD_IMPLICIT_LAYER_PATH` (no registry registration needed — worth adopting for future
-testing, since it avoids `install_layer.bat` touching HKCU):
+The first pass loaded the layer with `VK_ADD_IMPLICIT_LAYER_PATH` and saw the mock host die
+at the first present with `0xC0000005`. That was caused by the test method itself.
 
-| Configuration | Result |
-|---|---|
-| No layer at all | **PASS** — `exiting after 13119 frames`, clean exit |
-| Layer discoverable, `DISABLE_RANDOVERLAY=1` | **PASS** — `exiting after 11608 frames`, clean exit |
-| Layer active, validation OFF | **FAIL** — dies at first present, no exit line |
-| Layer active, validation ON | **FAIL** — dies at first present, no exit line |
+The layer was **already registered** in `HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers`, as
+`%USERPROFILE%\Documents\GitHub\Repositories\...\RandOverlay_layer.json`. That path is not
+stale — `Documents\GitHub` is a **junction** to `Documents\.workspace`, so it resolves to the
+same manifest. Adding `VK_ADD_IMPLICIT_LAYER_PATH` on top gave the loader a second discovery
+route for the same layer, and the resulting chain faulted on the first present.
 
-The layer initialises perfectly every run — `layer_debug.log` reaches
-`CreateInstance → process gate (rpcs3.exe, RAC1) → log reader → CreateDevice (queueFamily=0)
-→ CreateSwapchainKHR (3 images 954x511) → font loaded 43px → ImGui initialized →
-Render resources ready (3 framebuffers) → QueuePresentKHR hook LIVE` — and then the
-process is gone.
+**Caveat for future testing: never set `VK_ADD_IMPLICIT_LAYER_PATH` for this layer while it
+is registry-registered.** Use one discovery route or the other. The earlier note in this plan
+suggesting the env var as a way to avoid touching HKCU was wrong and is retracted.
 
-### Root cause: a foreign layer sitting below us in the device chain
+### Verified working with OBS — the real-world configuration
 
-Traced by instrumenting `RandOverlay_QueuePresentKHR` (instrumentation since reverted;
-`layer.cpp` is unmodified). Findings in order:
-
-1. Fault code is `0xC0000005` (access violation), not a clean exit.
-2. The draw branch **is** taken on the very first present — `alpha=0.050, renderReady=1,
-   imguiReady=1, haveOverlay=1, scCount=1, match=1`. The one-time "Archipelago Overlay
-   ready" startup notice is mid-fade-in on frame 1, so frame 1 goes through the full
-   record/submit path. (The pass-through branch is *not* implicated.)
-3. Not a null dispatch entry: the queue dispatch key matches the device key and
-   `QueuePresentKHR`/`QueueSubmit` both resolve to valid pointers.
-4. Not a failed ImGui function load: instrumenting `ImguiLoader` showed **zero** null
-   resolutions — the GDPA→GIPA fallback works.
-5. Bisecting the draw block: `ResetCommandBuffer` OK → `BeginCommandBuffer` OK →
-   **fault inside `CmdBeginRenderPass`**.
-6. Resolving each entry point to its owning module is the answer:
-
-   | Entry point | Resolves into |
-   |---|---|
-   | `BeginCommandBuffer` | `nvoglv64.dll` (NVIDIA ICD) |
-   | `QueueSubmit` | `nvoglv64.dll` (NVIDIA ICD) |
-   | `CmdBeginRenderPass` | **`C:\ProgramData\obs-studio-hook\graphics-hook64.dll`** |
-   | `QueuePresentKHR` | **`C:\ProgramData\obs-studio-hook\graphics-hook64.dll`** |
-
-OBS Studio registers `VK_LAYER_OBS_HOOK` as a **GLOBAL implicit layer**
-(`C:\ProgramData\obs-studio-hook\obs-vulkan64.json`), so it loads into every Vulkan
-application whether or not OBS is running — OBS was **not** running for any of these runs.
-Recording our own overlay command buffer through OBS's hooked `vkCmdBeginRenderPass`
-faults.
-
-Suppressing just that layer via its own documented kill-switch makes everything work:
+Re-run in the documented configuration (HKCU registration only, no
+`VK_ADD_IMPLICIT_LAYER_PATH`), with **OBS Studio 32.2.1 running** and its always-registered
+`VK_LAYER_OBS_HOOK` implicit layer active in the chain:
 
 | Configuration | Result |
 |---|---|
-| RandOverlay + OBS layer | **FAIL** — `0xC0000005` |
-| RandOverlay, `DISABLE_VULKAN_OBS_CAPTURE=1` | **PASS** — exit `0x0`, 24906-25662 frames, overlay renders |
-| RandOverlay + Khronos validation, OBS off | **FAIL** — `0xC0000409` (`__fastfail`), **0 validation errors** |
+| Registry-only, OBS running, no validation | **PASS** — exit `0x0`, 15049 frames |
+| Registry-only, OBS running, + Archipelago events | **PASS** — exit `0x0`, 27704 frames, both events rendered |
+| Registry-only, OBS running, + Khronos validation | **FAIL** — `0xC0000409`, 0 validation errors |
+| `VK_ADD_IMPLICIT_LAYER_PATH` + registry (double discovery) | **FAIL** — `0xC0000005` |
 
-The third row is the important one: validation alone breaks it too, with a *different*
-fault code and without validation itself reporting a single error. So this is not
-specifically an OBS bug — the layer misbehaves when **any** additional layer sits below it
-in the device chain, and is only reliable when it is the sole layer above the ICD.
+The event run is the meaningful one: with OBS live, the layer picked up and rendered both
+appended Archipelago lines —
 
-The obvious suspect — failing to advance the loader chain link — was checked and is
-**not** the cause: `layer.cpp:393` and `layer.cpp:444` both correctly do
-`layerInfo->u.pLayerInfo = layerInfo->u.pLayerInfo->pNext` before calling down. The defect
-is elsewhere in how the layer records and submits its own work through entry points that
-another layer has hooked. Not yet isolated.
+```
+Message: Ratchet found their Hydrodisplacer
+Message: Clank found their Thruster-Pack
+```
 
-Validation's only diagnostics are 8 instances of `WARNING-vkGetDeviceProcAddr-device`
-(instance-level entry points fetched through `vkGetDeviceProcAddr`, from `ImguiLoader`
-trying GDPA first). Benign — the GIPA fallback covers them — but worth tidying by asking
-for instance-level functions through GIPA directly.
+So the layer coexists with the OBS capture hook, which matters because the OBS profile on
+this device is built around emulator capture (scenes `Emulator cap`, `Emulator cap with
+overlay`). No workaround and nothing to disable.
 
-### Open confound — layer ORDER, not necessarily a regression
+### Genuine remaining defect: incompatible with the Khronos validation layer
 
-These runs loaded the layer with `VK_ADD_IMPLICIT_LAYER_PATH`, whereas the successful
-2026-07-01 session used `install_layer.bat` (HKCU registry registration). Implicit-layer
-**ordering** decides which layer sits below which, and therefore whether our down-chain
-calls land in the ICD or in OBS's hook. OBS's manifest (dated 2024-04-11) was already
-registered on 2026-07-01, yet that session ran 65735 frames cleanly — so the difference is
-plausibly discovery order, not a code change.
+One real finding survives. With the layer loaded the documented way, enabling
+`VK_LAYER_KHRONOS_validation` kills the process with `0xC0000409`
+(`STATUS_STACK_BUFFER_OVERRUN` / `__fastfail`) while validation itself reports **zero
+errors**. Reproduced both with and without the OBS layer present, so validation is the
+trigger.
 
-**Do not record this as a confirmed regression until that is settled.** The deciding test
-is to register the layer the documented way (`install_layer.bat`, HKCU) and re-run with OBS
-present; if it passes, the conflict is an artefact of the env-var loading path and the real
-constraint is "RandOverlay must be ordered below other capture layers". That test mutates
-HKCU, so it needs an explicit go-ahead, and `uninstall_layer.bat` reverses it.
+This blocks only the optional "run once with the validation layer on" sub-gate. It has no
+effect on production use, since nobody ships with validation enabled — but it does mean the
+three residual notes (queue-family assumption, fence-less cmd-buffer reuse, `OUT_OF_DATE`
+semaphore) remain **unaudited** rather than cleared. Not yet isolated. The loader chain-link
+advance was checked and is correct (`layer.cpp:393`, `layer.cpp:444`), so the fault is
+elsewhere.
+
+Validation's only other output is 8 instances of `WARNING-vkGetDeviceProcAddr-device`
+(instance-level entry points fetched through `vkGetDeviceProcAddr`, from `ImguiLoader` trying
+GDPA before falling back to GIPA). Benign, but worth tidying by requesting instance-level
+functions through GIPA directly.
 
 ### Reproducer
 
+Build the mock host AS `rpcs3.exe` from `tests\mock_vk_host.cpp`, then, with the layer
+registered via `install_layer.bat` and **no** `VK_ADD_IMPLICIT_LAYER_PATH` set:
+
 ```
-build\ (mock host built AS rpcs3.exe from tests\mock_vk_host.cpp)
-set VK_ADD_IMPLICIT_LAYER_PATH=<repo>\Vulkan-DLL-Version
-set RANDOVERLAY_INI=<a test ini whose LogDir points at a scratch log dir>
+set RANDOVERLAY_INI=<test ini whose LogDir points at a scratch log dir>
 set RANDOVERLAY_NO_PROMPT=1
-set MOCK_SECONDS=6
+set MOCK_SECONDS=20
 rpcs3.exe > mock_stdout.log 2>&1
 ```
 
-PASS looks like `[mock] exiting after N frames`; FAIL is the absence of that line. Launch
-it with PowerShell `Start-Process -PassThru … ; $p.WaitForExit()` — a bare shell loses the
-handle and reaps the process early, which masks the difference.
+PASS looks like `[mock] exiting after N frames` plus `Message:` lines in
+`build\layer_debug.log`; FAIL is the absence of the exit line. Launch via PowerShell
+`[System.Diagnostics.Process]::Start(...)` + `WaitForExit()` and read `$proc.ExitCode` — a
+bare shell loses the handle, reaps the process early, and reports a misleading `127`. Append
+event lines to the tailed log *while the process runs*; the reader seeds its line count at
+startup, so pre-existing lines are skipped by design.
 
 ### Gate (2) — CLOSED
 
