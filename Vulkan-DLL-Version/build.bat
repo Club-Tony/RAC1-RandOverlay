@@ -12,8 +12,13 @@ set IMGUI=deps\imgui
 :: Prefer a known x64 MinGW-w64 toolchain; fall back to PATH.
 set GCC=g++
 set GCC_C=gcc
+set AR=ar
 if exist C:\mingw64\bin\g++.exe set GCC=C:\mingw64\bin\g++
 if exist C:\mingw64\bin\gcc.exe set GCC_C=C:\mingw64\bin\gcc
+:: ar must come from the SAME x64 toolchain: a bare 'ar' can resolve to the
+:: 32-bit MinGW.org binutils, whose archive the x86_64 ld cannot index
+:: ("archive has no index"), breaking the fallback link.
+if exist C:\mingw64\bin\ar.exe set AR=C:\mingw64\bin\ar
 
 :: --- Arch guard: a 32-bit DLL cannot load into RPCS3/PCSX2 (both x64) --------
 set GMACHINE=
@@ -53,7 +58,7 @@ echo [2/4] Building MinHook...
 "%GCC_C%" -c -O2 -DWIN32_LEAN_AND_MEAN -I %MINHOOK%\include %MINHOOK%\src\hook.c       -o build\hook.o
 "%GCC_C%" -c -O2 -DWIN32_LEAN_AND_MEAN -I %MINHOOK%\include %MINHOOK%\src\trampoline.c -o build\trampoline.o
 "%GCC_C%" -c -O2 -DWIN32_LEAN_AND_MEAN -I %MINHOOK%\include %MINHOOK%\src\hde\hde64.c  -o build\hde64.o
-ar rcs build\libminhook.a build\buffer.o build\hook.o build\trampoline.o build\hde64.o
+"%AR%" rcs build\libminhook.a build\buffer.o build\hook.o build\trampoline.o build\hde64.o
 if errorlevel 1 goto fail
 echo   MinHook OK
 echo.
