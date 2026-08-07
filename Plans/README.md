@@ -1,7 +1,7 @@
 # RAC RandOverlay Plan Map
 
-**Status:** Active index — the two current milestones are implemented and awaiting manual emulator/runtime verification
-**Updated:** 2026-08-06
+**Status:** Active index — the two current milestones are implemented and awaiting manual emulator/runtime verification; one non-blocking handoff is open
+**Updated:** 2026-08-06 (Vulkan verification pass: build fix, apworld client verification, OBS coexistence proven)
 **Branch:** `rac123-support`
 
 ## Organization Decision
@@ -11,7 +11,13 @@ Keep the plans separate. They share configuration and verification inputs, but t
 | Plan | Canonical ownership | Depends on | Current state |
 | --- | --- | --- | --- |
 | [Multi-game overlay roadmap](multi-game-overlay-roadmap.md) | RAC1/RAC2/RAC3 product scope, branch/repository naming, shared `RandOverlay.ini` presets, README framing, and AHK/PowerShell-WPF behavior | None; this is the shared product/configuration track | Implementation complete; awaiting RAC1 RPCS3 plus RAC2/RAC3 PCSX2 visual/runtime checks |
-| [Vulkan layer overlay](vulkan-overlay-works-no-matter-what.md) | Vulkan implicit-layer architecture, in-frame ImGui rendering, exclusive-fullscreen behavior, build/install workflow, and Vulkan-specific safety | Multi-game process mappings, active preset, visual settings, and log-path contract | Layer feature-complete with 34/34 unit tests and mock-host GPU proof; awaiting real-emulator/fullscreen checks |
+| [Vulkan layer overlay](vulkan-overlay-works-no-matter-what.md) | Vulkan implicit-layer architecture, in-frame ImGui rendering, exclusive-fullscreen behavior, build/install workflow, and Vulkan-specific safety | Multi-game process mappings, active preset, visual settings, and log-path contract | Layer feature-complete with 34/34 unit tests; 2026-08-06 mock-host proof **with OBS capture layer active** (27704 frames, events rendered); awaiting real-emulator/fullscreen checks |
+
+### Open handoffs
+
+| Handoff | Scope | Blocking? |
+| --- | --- | --- |
+| [Vulkan validation-layer incompatibility](handoffs/2026-08-06-vulkan-validation-layer-incompatibility.md) | Layer dies with `0xC0000409` when `VK_LAYER_KHRONOS_validation` is enabled; leaves the three residual notes unaudited | No — does not block either plan reaching Completed |
 
 A single super-plan would mix the external-window and in-frame renderers, make one status line ambiguous, and duplicate their implementation histories. This index is the only shared coordination layer; implementation detail remains in the owning plan.
 
@@ -38,10 +44,11 @@ Run the checks in this order so later failures are attributable to the renderer 
    - RAC1 on RPCS3: verify overlay placement and `Ctrl+Alt+B` borderless toggle/restore.
    - RAC2 or RAC3 on PCSX2: verify preset process detection, placement, and borderless toggle/restore.
 3. **In-frame Vulkan renderer (Vulkan plan)**
-   - Build and register the implicit layer, then test RPCS3/RAC1 in windowed, borderless, and exclusive fullscreen.
+   - The layer is already registered in `HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers`. **Never set `VK_ADD_IMPLICIT_LAYER_PATH`** — a second discovery route for the same layer crashes the host.
+   - Test RPCS3/RAC1 in windowed, borderless, and exclusive fullscreen.
    - Repeat at least one PCSX2/RAC2-or-RAC3 Vulkan case.
-   - Verify the RAC2/RAC3 `ClientComponent` labels match the Archipelago Launcher UI when choosing **Yes** in the launch prompt.
-   - Ideally repeat one run with the Vulkan validation layer enabled and retain `layer_debug.log` evidence.
+   - ~~Verify the RAC2/RAC3 `ClientComponent` labels match the Archipelago Launcher UI.~~ **Done 2026-08-06** — verified against the installed apworlds; RAC1 also corrected to its own apworld client.
+   - ~~Ideally repeat one run with the Vulkan validation layer enabled.~~ **Blocked** — see the open handoff above. Retain `layer_debug.log` evidence from the normal runs instead.
 4. **Closeout**
    - Record the emulator/client versions and results in the owning plan.
    - Change each plan to `Completed` independently when its own gates pass.

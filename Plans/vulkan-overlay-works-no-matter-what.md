@@ -249,11 +249,32 @@ Resolve this before trusting rendering. Add verbose logging to `RandOverlay_GetI
 - `Vulkan-DLL-Version/src/overlay.cpp`, `src/injector.cpp` — fallback (kept, not the focus).
 
 ## Verification (end-to-end)
-1. `build.bat` → `RandOverlay_layer.dll` builds clean; `install_layer.bat` registers it.
-2. RPCS3 + RAC1, **exclusive fullscreen**. Trigger an Archipelago event (or append a matching `[FileLog at …]:` line to the newest `C:\ProgramData\Archipelago\logs\Launcher_*.txt`). Confirm text renders inside the frame in fullscreen.
-3. Repeat borderless + windowed. Repeat PCSX2 + RAC2/RAC3.
-4. `build/layer_debug.log` shows the full chain: `CreateInstance → CreateDevice → CreateSwapchainKHR → Swapchain: N images … → Message: …`.
-5. Gating: a non-emulator Vulkan app (e.g. `vkcube`) is unaffected. `DISABLE_RANDOVERLAY=1` disables cleanly.
-6. Regression: AHK + PS+WPF runtimes and `Test-RandOverlay.ps1` still pass.
 
-> After implementation the live emulator/fullscreen verification is manual (needs RPCS3/PCSX2 + a running randomizer), so status moves to **Awaiting Manual Action**, then **Completed** once the user confirms text renders in fullscreen.
+Steps 1, 4, 5 and the build/test half of this list were completed on 2026-08-06 (see
+**Verification Pass — 2026-08-06**). Steps 2 and 3 are the remaining manual gate.
+
+1. ~~`build.bat` → `RandOverlay_layer.dll` builds clean; `install_layer.bat` registers it.~~
+   **Done.** Build is clean including the fallback. The layer is **already registered** in
+   `HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers` — re-running `install_layer.bat` is
+   harmless but unnecessary. **Do not set `VK_ADD_IMPLICIT_LAYER_PATH`**; a second
+   discovery route for the same layer crashes the host (`0xC0000005`).
+2. **REMAINING GATE.** RPCS3 + RAC1, **exclusive fullscreen**. Trigger an Archipelago event (or append a matching `[FileLog at …]:` line to the newest `C:\ProgramData\Archipelago\logs\Launcher_*.txt`). Confirm text renders inside the frame in fullscreen.
+3. **REMAINING GATE.** Repeat borderless + windowed. Repeat PCSX2 + RAC2/RAC3.
+4. ~~`build/layer_debug.log` shows the full chain~~ — **confirmed** on the mock host:
+   `CreateInstance → CreateDevice → CreateSwapchainKHR → Swapchain: 3 images → Font loaded →
+   ImGui initialized → Render resources ready → QueuePresentKHR hook LIVE → Message: …`,
+   with OBS running.
+5. ~~Gating~~ — **confirmed**: `DISABLE_RANDOVERLAY=1` disables cleanly (host runs to
+   completion, layer inert). A non-emulator Vulkan app remains untested but the process
+   gate is unit-covered.
+6. Regression: AHK + PS+WPF runtimes and `Test-RandOverlay.ps1` still pass. *(Not re-run on
+   2026-08-06 — no shared code was touched; only `build.bat`, `RandOverlay.ini`'s RAC1
+   `ClientComponent`, and plan docs changed. The ini change does affect the shared preset
+   contract, so this is worth a confirming run.)*
+7. ~~Ideally one run with the Vulkan validation layer enabled.~~ **BLOCKED** — the layer is
+   incompatible with `VK_LAYER_KHRONOS_validation` (`0xC0000409`, zero validation errors).
+   Tracked in [handoffs/2026-08-06-vulkan-validation-layer-incompatibility.md](handoffs/2026-08-06-vulkan-validation-layer-incompatibility.md).
+   Consequence: the three residual notes (queue-family assumption, fence-less cmd-buffer
+   reuse, `OUT_OF_DATE` semaphore) remain **unaudited**, not cleared.
+
+> The live emulator/fullscreen verification is manual (needs RPCS3/PCSX2 + a running randomizer), so status stays **Awaiting Manual Action** until steps 2-3 pass, then **Completed**. The validation-layer defect in step 7 does **not** block Completed — it is non-blocking follow-on work with its own handoff.
