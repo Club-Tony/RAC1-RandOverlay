@@ -1,17 +1,17 @@
 # RAC RandOverlay — Vulkan Layer Overlay That Works No Matter What
 
-**Status:** Awaiting Manual Action — 2026-08-06 pass: gate (2) CLOSED (RAC2/RAC3 `ClientComponent` names verified against the installed apworlds; RAC1 corrected to its own apworld client), build fixed (`ar` was not pinned to the x64 toolchain), 34/34 unit tests, and the layer verified end-to-end on the mock host **with OBS Studio running and its `VK_LAYER_OBS_HOOK` active** — 27704 frames, clean exit, both Archipelago events rendered. Gate (1), the real RPCS3/PCSX2 exclusive-fullscreen run, is unblocked and remains the only gate to Completed. One non-blocking defect is open: the layer is incompatible with the Khronos validation layer (`0xC0000409`, zero validation errors), so the optional validation audit of the three residual notes could not be performed.
+**Status:** Awaiting Manual Action — automated implementation and validation are complete as of 2026-08-08: 34/34 units, AHK/WPF regression, normal, disabled, OBS-active, and clean Khronos validation scenarios pass; RAC1 windowed and RAC2 borderless screenshots render injected events in-frame. The only completion gate is live Vulkan certification in RPCS3/RAC1 and PCSX2/RAC2, including exclusive fullscreen where available.
 **Created:** 2026-07-01
 **Repo:** RAC1-RandOverlay (`github.com/Club-Tony/RAC1-RandOverlay`) — personal
 **Goal:** Finish the `Vulkan-DLL-Version` so Archipelago event text renders *inside* the emulator frame via an implicit Vulkan layer — working in exclusive fullscreen, borderless, and windowed on both RPCS3 (RAC1) and PCSX2 (RAC2/RAC3).
 
 ## Plan Relationship And Scope
 
-See [Plans/README.md](README.md) for the canonical plan map and shared manual-test sequence, and the [multi-game overlay roadmap](multi-game-overlay-roadmap.md) for the shared RAC1/RAC2/RAC3 product and configuration contract.
+See [Plans/README.md](README.md) for the canonical plan map and shared manual-test sequence, and the [multi-game overlay roadmap](Completed/multi-game-overlay-roadmap.md) for the shared RAC1/RAC2/RAC3 product and configuration contract.
 
 This is a renderer-specific plan. It consumes `RandOverlay.ini`, emulator process mappings, log-source rules, and display settings from the multi-game track. It owns only the implicit Vulkan layer, in-frame ImGui rendering, exclusive-fullscreen behavior, and Vulkan-specific build, install, diagnostics, and safety. Shared message/log UX changes belong in the multi-game track and should be implemented with parity here rather than maintained as a second Vulkan backlog.
 
-All implementation work items in this document were completed on 2026-07-01. As of 2026-08-06 the Launcher-label gate is closed and the layer is verified to coexist with the OBS capture hook; the real-emulator/fullscreen run is the only remaining gate — see **Verification Pass — 2026-08-06**.
+All implementation work items in this document were completed by 2026-08-08. The Launcher-label gate is closed, the layer coexists with the OBS capture hook, and the validation incompatibility is fixed; the real-emulator/fullscreen run is the only remaining gate.
 
 ## Historical Starting Point — Superseded By The Validation Log Below
 
@@ -208,6 +208,28 @@ RAC1 was outside the original gate but `RAC1.apworld` ships its own client compo
 the preset pointed at the generic text client while RAC2/RAC3 launched their game-specific
 ones. Updated to `Ratchet & Clank Client` for consistency across the three presets.
 
+## Validation Resolution And Automated Visual Pass — 2026-08-08
+
+Call-boundary tracing isolated the validation fast-fail to layer-allocated dispatchable
+command buffers, including ImGui's font-upload buffer. The layer was not applying the
+Vulkan loader's `VK_LOADER_DATA_CALLBACK`, so the driver-only chain happened to tolerate
+command buffers that the validation chain correctly expected to carry loader dispatch data.
+The layer now captures that callback during device creation and applies it to every command
+buffer it allocates. ImGui's instance-level Vulkan functions are also resolved through GIPA,
+which removes the eight validation function-resolution warnings.
+
+The repo-local live runner now verifies normal, disabled, OBS-active, and Khronos-validation
+scenarios with scratch-only logs/configuration. Deterministic `rpcs3.exe` and `pcsx2-qt.exe`
+mock hosts produce reviewable RAC1 windowed and RAC2 borderless screenshots; automated checks
+confirm message ingestion, process/preset gating, window geometry, and changed pixels inside
+the configured overlay band. Validation exits cleanly with zero errors and warnings.
+
+The post-fix audit found two independent, non-blocking hardening opportunities:
+[present queue-family selection](handoffs/2026-08-08-vulkan-present-queue-family-selection.md)
+and [`OUT_OF_DATE` semaphore lifecycle](handoffs/2026-08-08-vulkan-out-of-date-semaphore-lifecycle.md).
+Command-buffer reuse is now guarded so a newly allocated buffer is not reset before its first
+recording; the passing validation scenario covers the normal reuse path.
+
 ## Completed Implementation Record (original work-item order)
 
 The six items below are retained to explain the implemented architecture and review boundaries. They are complete in `dc86da4`; they are not the next-action queue. Remaining actions are the manual checks under **Verification**.
@@ -250,8 +272,8 @@ Resolve this before trusting rendering. Add verbose logging to `RandOverlay_GetI
 
 ## Verification (end-to-end)
 
-Steps 1, 4, 5 and the build/test half of this list were completed on 2026-08-06 (see
-**Verification Pass — 2026-08-06**). Steps 2 and 3 are the remaining manual gate.
+The automated portions of steps 1 and 4-7 are complete. Steps 2 and 3 are the remaining
+manual real-emulator gate.
 
 1. ~~`build.bat` → `RandOverlay_layer.dll` builds clean; `install_layer.bat` registers it.~~
    **Done.** Build is clean including the fallback. The layer is **already registered** in
@@ -259,7 +281,7 @@ Steps 1, 4, 5 and the build/test half of this list were completed on 2026-08-06 
    harmless but unnecessary. **Do not set `VK_ADD_IMPLICIT_LAYER_PATH`**; a second
    discovery route for the same layer crashes the host (`0xC0000005`).
 2. **REMAINING GATE.** RPCS3 + RAC1, **exclusive fullscreen**. Trigger an Archipelago event (or append a matching `[FileLog at …]:` line to the newest `C:\ProgramData\Archipelago\logs\Launcher_*.txt`). Confirm text renders inside the frame in fullscreen.
-3. **REMAINING GATE.** Repeat borderless + windowed. Repeat PCSX2 + RAC2/RAC3.
+3. **REMAINING GATE.** Repeat borderless + windowed. Repeat PCSX2 + RAC2 in every applicable mode.
 4. ~~`build/layer_debug.log` shows the full chain~~ — **confirmed** on the mock host:
    `CreateInstance → CreateDevice → CreateSwapchainKHR → Swapchain: 3 images → Font loaded →
    ImGui initialized → Render resources ready → QueuePresentKHR hook LIVE → Message: …`,
@@ -267,14 +289,12 @@ Steps 1, 4, 5 and the build/test half of this list were completed on 2026-08-06 
 5. ~~Gating~~ — **confirmed**: `DISABLE_RANDOVERLAY=1` disables cleanly (host runs to
    completion, layer inert). A non-emulator Vulkan app remains untested but the process
    gate is unit-covered.
-6. Regression: AHK + PS+WPF runtimes and `Test-RandOverlay.ps1` still pass. *(Not re-run on
-   2026-08-06 — no shared code was touched; only `build.bat`, `RandOverlay.ini`'s RAC1
-   `ClientComponent`, and plan docs changed. The ini change does affect the shared preset
-   contract, so this is worth a confirming run.)*
-7. ~~Ideally one run with the Vulkan validation layer enabled.~~ **BLOCKED** — the layer is
-   incompatible with `VK_LAYER_KHRONOS_validation` (`0xC0000409`, zero validation errors).
-   Tracked in [handoffs/2026-08-06-vulkan-validation-layer-incompatibility.md](handoffs/2026-08-06-vulkan-validation-layer-incompatibility.md).
-   Consequence: the three residual notes (queue-family assumption, fence-less cmd-buffer
-   reuse, `OUT_OF_DATE` semaphore) remain **unaudited**, not cleared.
+6. ~~Regression: AHK + PS+WPF runtimes and `Test-RandOverlay.ps1` still pass.~~ **Done
+   2026-08-08.** The owner confirmed both external renderers across RAC1-RAC3 and the
+   existing automated regression suite passes.
+7. ~~Run with the Vulkan validation layer enabled.~~ **Done 2026-08-08.** The mock exits
+   `0x00000000`, prints its normal exit line, reports zero validation errors, and emits none
+   of the former eight function-resolution warnings. The completed handoff is archived at
+   [Completed/handoffs/2026-08-06-vulkan-validation-layer-incompatibility.md](Completed/handoffs/2026-08-06-vulkan-validation-layer-incompatibility.md).
 
-> The live emulator/fullscreen verification is manual (needs RPCS3/PCSX2 + a running randomizer), so status stays **Awaiting Manual Action** until steps 2-3 pass, then **Completed**. The validation-layer defect in step 7 does **not** block Completed — it is non-blocking follow-on work with its own handoff.
+> The live emulator/fullscreen verification is manual (needs RPCS3/PCSX2 + a running randomizer), so status stays **Awaiting Manual Action** until steps 2-3 pass, then **Completed**.

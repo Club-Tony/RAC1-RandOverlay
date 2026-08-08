@@ -1,14 +1,14 @@
 # RAC RandOverlay - Multi-Game Branch Naming And Overlay Roadmap
 
-**Status:** Awaiting Manual Action — implementation complete 2026-04-25; remaining gates are manual-only emulator/runtime coverage the user must run (RAC1 on RPCS3 + at least one RAC2/RAC3 case on PCSX2)
+**Status:** Completed - archived 2026-08-08 — the owner confirmed the AHK and PowerShell/WPF renderers work across RAC1, RAC2, and RAC3; the automated regression suite also passes. Remaining live emulator work is Vulkan-only and stays in the Vulkan plan.
 **Created:** 2026-04-20
 **Goal:** Reframe the non-main feature work so it clearly covers RAC1, RAC2, and RAC3 overlay support, then identify the next worthwhile improvements for the overlay beyond the current emulator and borderless work.
 
 ## Plan Relationship And Scope
 
-See [Plans/README.md](README.md) for the canonical plan map and shared manual-test sequence.
+See [Plans/README.md](../README.md) for the canonical plan map and shared manual-test sequence.
 
-This is the umbrella product/configuration plan. It owns RAC1/RAC2/RAC3 scope, branch and repository naming, the shared `RandOverlay.ini` contract, README framing, and behavior of the AHK and PowerShell/WPF external-window runtimes. The [Vulkan layer plan](vulkan-overlay-works-no-matter-what.md) is intentionally separate: it consumes these presets and display settings but owns in-frame Vulkan rendering, exclusive-fullscreen behavior, and Vulkan-specific build/runtime safety.
+This is the umbrella product/configuration plan. It owns RAC1/RAC2/RAC3 scope, branch and repository naming, the shared `RandOverlay.ini` contract, README framing, and behavior of the AHK and PowerShell/WPF external-window runtimes. The [Vulkan layer plan](../vulkan-overlay-works-no-matter-what.md) is intentionally separate: it consumes these presets and display settings but owns in-frame Vulkan rendering, exclusive-fullscreen behavior, and Vulkan-specific build/runtime safety.
 
 The branch rename, README reframing, presets, and shared configuration described in the early sections below are complete. Their original rationale is retained as decision history. Phases 4 and 5 and the additional overlay ideas remain optional follow-on backlog; they are not blockers for this plan's current manual-only closeout.
 
@@ -130,6 +130,12 @@ Unattended sweep on branch `rac123-support`. Tooling: PowerShell + AutoHotkey v1
 - **Criteria 3 & 4 — KNOWN-MANUAL.** Overlay positioning over an RAC1 (RPCS3) case and an RAC2/RAC3 (PCSX2) case, and the borderless-toggle behavior after the preset refactor, require running the emulators and visually confirming overlay placement. Cannot be automated headlessly — these stay on the manual queue and are the only gates remaining.
 
 Net: 3 of 5 completion criteria are auto-verified PASS; the milestone is blocked solely on the two emulator/visual criteria.
+
+## Closeout — 2026-08-08
+
+- Owner confirmation covers the former external-window RAC1/RPC3 and RAC2/RAC3/PCSX2 visual gates for both AHK and PowerShell/WPF.
+- `Test-RandOverlay.ps1` passed with the real AutoHotkey v1 runtime, including parse and startup self-test coverage.
+- Vulkan renderer certification remains independent and is not a blocker for this external-renderer milestone.
 
 ## Risks
 

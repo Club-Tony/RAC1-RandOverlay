@@ -1,9 +1,9 @@
 # Handoff: isolate the RandOverlay Vulkan layer's incompatibility with the Khronos validation layer
 
-**Status:** Planned — open defect, not blocking production use
+**Status:** Completed - archived 2026-08-08
 **Created:** 2026-08-06
 **Type:** Handoff
-**Parent plan:** [vulkan-overlay-works-no-matter-what.md](../vulkan-overlay-works-no-matter-what.md)
+**Parent plan:** [vulkan-overlay-works-no-matter-what.md](../../vulkan-overlay-works-no-matter-what.md)
 
 ## Mission
 
@@ -18,6 +18,30 @@ remain unaudited rather than cleared.
 This is a debuggability defect, not a user-facing one — nobody ships with validation
 enabled. Do not treat it as urgent, and do not destabilise the working production path
 to fix it.
+
+## Resolution — 2026-08-08
+
+The fault was not an application Vulkan error. RandOverlay and ImGui allocate internal
+`VkCommandBuffer` objects below the loader, but the layer never applied the loader's
+`pfnSetDeviceLoaderData` callback to those dispatchable handles. The driver-only chain
+tolerated the missing loader dispatch data; the validation layer fast-failed on the first
+command-buffer call. The layer now wraps internal command-buffer allocation and initializes
+loader data for every returned handle.
+
+The ImGui function loader also routes its eight instance/physical-device functions through
+GIPA rather than probing GDPA first. The former validation warnings are gone.
+
+Acceptance evidence:
+
+- `VK_LAYER_KHRONOS_validation`: clean exit, zero errors, zero warnings, and a normal mock exit line.
+- Normal, manifest-disabled, and OBS-active scenarios pass through the committed live runner.
+- RAC1 windowed and RAC2 borderless screenshots show the injected event in-frame.
+- Temporary call-boundary instrumentation was removed.
+
+Residual audit: per-image command-buffer reuse is safe because reuse occurs only when the
+same swapchain image returns from presentation. Present-queue-family selection and explicit
+`OUT_OF_DATE` semaphore lifecycle coverage are separate non-blocking hardening items linked
+from the plan map.
 
 ## Environment
 
