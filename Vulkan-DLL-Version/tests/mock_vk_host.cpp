@@ -20,6 +20,7 @@
 #include <vulkan/vulkan.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <cmath>
 #include <vector>
 
@@ -38,6 +39,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 int main() {
     printf("[mock] pid=%lu starting Vulkan present loop\n", GetCurrentProcessId()); fflush(stdout);
+    const char* modeEnv = getenv("MOCK_WINDOW_MODE");
+    const bool borderless = modeEnv && _stricmp(modeEnv, "borderless") == 0;
+    const bool staticFrame = getenv("MOCK_STATIC_FRAME") && strcmp(getenv("MOCK_STATIC_FRAME"), "1") == 0;
 
     // ── Win32 window ──────────────────────────────────────────────────────
     HINSTANCE hinst = GetModuleHandle(nullptr);
@@ -47,15 +51,26 @@ int main() {
     wc.lpszClassName = "RandOverlayMockHost";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     RegisterClassA(&wc);
-    g_hwnd = CreateWindowExA(0, wc.lpszClassName, "RandOverlay Mock Host (fake rpcs3)",
-                             WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX,
-                             120, 120, (int)g_extent.width, (int)g_extent.height,
+    DWORD windowStyle = borderless ? WS_POPUP : (WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX);
+    int windowX = borderless ? 0 : 120;
+    int windowY = borderless ? 0 : 120;
+    int windowW = borderless ? GetSystemMetrics(SM_CXSCREEN) : (int)g_extent.width;
+    int windowH = borderless ? GetSystemMetrics(SM_CYSCREEN) : (int)g_extent.height;
+    g_hwnd = CreateWindowExA(0, wc.lpszClassName, "RandOverlay Mock Host",
+                             windowStyle, windowX, windowY, windowW, windowH,
                              nullptr, nullptr, hinst, nullptr);
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
     // Keep the mock window visible on top for screenshot capture.
     SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     SetForegroundWindow(g_hwnd);
+    RECT windowRect = {};
+    GetWindowRect(g_hwnd, &windowRect);
+    printf("[mock-meta] ready=1 hwnd=0x%p mode=%s x=%ld y=%ld width=%ld height=%ld\n",
+           (void*)g_hwnd, borderless ? "borderless" : "windowed",
+           windowRect.left, windowRect.top,
+           windowRect.right - windowRect.left, windowRect.bottom - windowRect.top);
+    fflush(stdout);
 
     // ── Instance ──────────────────────────────────────────────────────────
     const char* instExt[] = { VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME };
@@ -206,7 +221,7 @@ int main() {
         if (acq == VK_ERROR_OUT_OF_DATE_KHR) break;
 
         // animated clear colour (slow hue sweep) so frames visibly change
-        float t = frame * 0.01f;
+        float t = staticFrame ? 0.0f : frame * 0.01f;
         VkClearValue clear;
         clear.color.float32[0] = 0.25f + 0.20f * sinf(t);
         clear.color.float32[1] = 0.30f + 0.20f * sinf(t + 2.0f);

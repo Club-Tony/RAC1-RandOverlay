@@ -89,6 +89,7 @@ static float MessageAlpha(ULONGLONG now) {
 // Vulkan chain / handles
 static PFN_vkGetInstanceProcAddr g_nextGIPA = nullptr; // next layer down (instance)
 static PFN_vkGetDeviceProcAddr   g_nextGDPA = nullptr; // next layer down (device)
+static PFN_vkSetDeviceLoaderData g_setDeviceLoaderData = nullptr;
 static VkInstance        g_instance       = VK_NULL_HANDLE;
 static VkPhysicalDevice  g_physicalDevice = VK_NULL_HANDLE;
 static VkDevice          g_device         = VK_NULL_HANDLE;
@@ -106,17 +107,62 @@ static std::vector<VkImage>       g_swapImages;
 static std::vector<VkImageView>   g_swapViews;
 static std::vector<VkFramebuffer> g_framebuffers;
 static std::vector<VkCommandBuffer> g_cmdBuffers;
+static std::vector<bool>          g_cmdRecorded;
 static std::vector<VkSemaphore>   g_overlaySems; // one per swapchain image
 static bool g_renderReady = false;
 static bool g_imguiReady  = false;
 static ULONGLONG g_lastPresentTick = 0;
 
+static VkResult VKAPI_CALL AllocateLayerCommandBuffers(
+    VkDevice device,
+    const VkCommandBufferAllocateInfo* pAllocateInfo,
+    VkCommandBuffer* pCommandBuffers);
+
 // ── ImGui Vulkan function loader (routes DOWN the chain, not the loader exports) ─
+static bool IsInstanceLevelImguiFunction(const char* name) {
+    static const char* const names[] = {
+        "vkDestroySurfaceKHR",
+        "vkEnumeratePhysicalDevices",
+        "vkGetPhysicalDeviceProperties",
+        "vkGetPhysicalDeviceMemoryProperties",
+        "vkGetPhysicalDeviceQueueFamilyProperties",
+        "vkGetPhysicalDeviceSurfaceCapabilitiesKHR",
+        "vkGetPhysicalDeviceSurfaceFormatsKHR",
+        "vkGetPhysicalDeviceSurfacePresentModesKHR",
+    };
+    for (const char* candidate : names)
+        if (strcmp(name, candidate) == 0) return true;
+    return false;
+}
+
 static PFN_vkVoidFunction ImguiLoader(const char* name, void*) {
     PFN_vkVoidFunction f = nullptr;
-    if (g_nextGDPA && g_device)   f = g_nextGDPA(g_device, name);   // device-level, in-chain
-    if (!f && g_nextGIPA && g_instance) f = g_nextGIPA(g_instance, name); // instance-level
+    if (IsInstanceLevelImguiFunction(name)) {
+        if (g_nextGIPA && g_instance) f = g_nextGIPA(g_instance, name);
+    } else {
+        if (strcmp(name, "vkAllocateCommandBuffers") == 0)
+            return (PFN_vkVoidFunction)&AllocateLayerCommandBuffers;
+        if (g_nextGDPA && g_device) f = g_nextGDPA(g_device, name);
+        if (!f && g_nextGIPA && g_instance) f = g_nextGIPA(g_instance, name);
+    }
     return f;
+}
+
+static VkResult VKAPI_CALL AllocateLayerCommandBuffers(
+    VkDevice device,
+    const VkCommandBufferAllocateInfo* pAllocateInfo,
+    VkCommandBuffer* pCommandBuffers)
+{
+    auto& d = GetDeviceDispatch(device);
+    VkResult result = d.AllocateCommandBuffers(device, pAllocateInfo, pCommandBuffers);
+    if (result != VK_SUCCESS) return result;
+    if (!g_setDeviceLoaderData) return VK_ERROR_INITIALIZATION_FAILED;
+
+    for (uint32_t i = 0; i < pAllocateInfo->commandBufferCount; i++) {
+        result = g_setDeviceLoaderData(device, pCommandBuffers[i]);
+        if (result != VK_SUCCESS) return result;
+    }
+    return VK_SUCCESS;
 }
 
 // ── ImGui shutdown ────────────────────────────────────────────────────────────
@@ -201,6 +247,7 @@ static void CleanupRender(VkDevice device) {
     if (g_cmdPool && !g_cmdBuffers.empty()) {
         d.FreeCommandBuffers(device, g_cmdPool, (uint32_t)g_cmdBuffers.size(), g_cmdBuffers.data());
         g_cmdBuffers.clear();
+        g_cmdRecorded.clear();
     }
     for (auto s  : g_overlaySems) d.DestroySemaphore(device, s, nullptr);
     g_overlaySems.clear();
@@ -300,11 +347,12 @@ static bool SetupRender(VkDevice device) {
     }
 
     g_cmdBuffers.resize(count);
+    g_cmdRecorded.assign(count, false);
     VkCommandBufferAllocateInfo cbai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cbai.commandPool        = g_cmdPool;
     cbai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbai.commandBufferCount = count;
-    if (d.AllocateCommandBuffers(device, &cbai, g_cmdBuffers.data()) != VK_SUCCESS) {
+    if (AllocateLayerCommandBuffers(device, &cbai, g_cmdBuffers.data()) != VK_SUCCESS) {
         LayerLog("AllocateCommandBuffers FAILED");
         return false;
     }
@@ -432,6 +480,14 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_CreateDevice(
     const VkAllocationCallbacks* pAllocator,
     VkDevice* pDevice)
 {
+    auto* loaderDataInfo = (VkLayerDeviceCreateInfo*)pCreateInfo->pNext;
+    while (loaderDataInfo &&
+           !(loaderDataInfo->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO &&
+             loaderDataInfo->function == VK_LOADER_DATA_CALLBACK)) {
+        loaderDataInfo = (VkLayerDeviceCreateInfo*)loaderDataInfo->pNext;
+    }
+    g_setDeviceLoaderData = loaderDataInfo ? loaderDataInfo->u.pfnSetDeviceLoaderData : nullptr;
+
     auto* layerInfo = (VkLayerDeviceCreateInfo*)pCreateInfo->pNext;
     while (layerInfo && !(layerInfo->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO &&
                           layerInfo->function == VK_LAYER_LINK_INFO)) {
@@ -540,7 +596,9 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_QueuePresentKHR(
         uint32_t idx = pPresentInfo->pImageIndices[0];
         if (idx < g_cmdBuffers.size()) {
             VkCommandBuffer cmd = g_cmdBuffers[idx];
-            d.ResetCommandBuffer(cmd, 0);
+            if (g_cmdRecorded[idx]) {
+                d.ResetCommandBuffer(cmd, 0);
+            }
 
             VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
             bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -556,6 +614,7 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_QueuePresentKHR(
 
             d.CmdEndRenderPass(cmd);
             d.EndCommandBuffer(cmd);
+            g_cmdRecorded[idx] = true;
 
             // Our submit waits on the app's present-wait semaphores, signals ours;
             // present then waits only on ours.
@@ -574,7 +633,8 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_QueuePresentKHR(
                 VkPresentInfoKHR mod = *pPresentInfo;
                 mod.waitSemaphoreCount = 1;
                 mod.pWaitSemaphores    = &g_overlaySems[idx];
-                return d.QueuePresentKHR(queue, &mod);
+                VkResult presentResult = d.QueuePresentKHR(queue, &mod);
+                return presentResult;
             }
             LayerLog("overlay QueueSubmit failed — passing through");
         }

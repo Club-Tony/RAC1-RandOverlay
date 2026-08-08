@@ -51,7 +51,8 @@ int main(int argc, char** argv) {
     CHECK(cfg.launcherExe.find("ArchipelagoLauncher.exe") != std::string::npos, "LauncherExe read");
     CHECK(cfg.fontFamily == "HandelGothic BT",  "FontFamily = HandelGothic BT");
     CHECK(cfg.fontFallback == "Bahnschrift",    "FontFallback = Bahnschrift");
-    CHECK(cfg.clientComponent == "Text Client", "RAC1 ClientComponent = Text Client");
+    CHECK(cfg.clientComponent == "Ratchet & Clank Client",
+          "RAC1 ClientComponent = Ratchet & Clank Client");
 
     // Preset-derived ClientComponent default (RAC3 preset, no explicit key)
     {

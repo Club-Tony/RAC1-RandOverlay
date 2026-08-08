@@ -2,4 +2,6 @@
 Vulkan-DLL-Version/build/
 Vulkan-DLL-Version/deps/
 Vulkan-DLL-Version/*.log
+Vulkan-DLL-Version/tests/live/artifacts/
+tests/live/artifacts/
 PS+WPF-Version/RandOverlay.log

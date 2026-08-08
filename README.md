@@ -68,10 +68,24 @@ It checks Git whitespace, PowerShell syntax, GitHub issue form shape, AutoHotkey
 
 GitHub Actions runs the same validation on push and pull request events, with `-SkipAhkRuntime` because hosted runners are not reliable for overlay window smoke tests.
 
+The Vulkan renderer has a repo-local live suite that uses scratch configuration and logs,
+synthetic events, deterministic mock emulator windows, Khronos validation, and screenshot
+region assertions:
+
+```powershell
+.\Vulkan-DLL-Version\tests\run_live_tests.ps1 -Mode preflight
+.\Vulkan-DLL-Version\tests\run_live_tests.ps1 -Mode all -KeepArtifacts
+```
+
+From the [internal] workspace, the same suite is available through the optional native-window
+target `python tests\live\run_live_tests.py rac-overlay --fixture mock --keep-artifacts`.
+It is intentionally excluded from `all` and scheduled sweeps because it opens Vulkan windows.
+
 ## Smoke-Test Checklist
 
-- RAC1 with RPCS3 positions the overlay over the emulator window.
-- RAC2 or RAC3 with PCSX2 positions the overlay over the emulator window.
+- AHK and PowerShell/WPF are owner-confirmed across RAC1-RAC3 and retain automated regression coverage.
+- The Vulkan mock suite verifies RAC1/RPCS3 windowed and RAC2/PCSX2 borderless in-frame rendering.
+- Real-emulator Vulkan certification remains required for windowed, borderless, and exclusive fullscreen where available.
 - `Ctrl+Alt+A` toggles overlay visibility.
 - `Ctrl+Alt+F` toggles between configured fonts.
 - `Ctrl+Alt+B` toggles borderless mode and restores the original window.

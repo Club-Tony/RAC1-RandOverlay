@@ -31,11 +31,11 @@ the shared repo-root `RandOverlay.ini`, so all three runtimes look consistent.
 ## Build
 
 ```bat
-build.bat
+build.bat --no-pause
 ```
 
 Produces `build\RandOverlay_layer.dll` (primary) and `build\overlay.dll` +
-`build\injector.exe` (fallback).
+`build\injector.exe` (fallback). Add `--debug` for symbols and diagnostic builds.
 
 ## Install / uninstall (layer)
 
@@ -68,7 +68,7 @@ Reads the repo-root **`RandOverlay.ini`** (`ActivePreset` + `[Preset.<name>]`):
 - `FontFamily` / `FontFallback` — resolved via the Windows font registry and loaded
   into ImGui (HandelGothic BT → Bahnschrift → built-in)
 - `ClientComponent` — which Archipelago Launcher component the launch prompt starts
-  for this preset (RAC1: `Text Client`, RAC2/RAC3: the R&C game clients)
+  for this preset (RAC1: `Ratchet & Clank Client`, RAC2/RAC3: the R&C game clients)
 
 If Archipelago is not running when the overlay activates, a one-time prompt offers:
 **Yes** = launch the active preset's client directly, **No** = open the Archipelago
@@ -81,6 +81,24 @@ in → hold `DisplayMs` → fade out, single auto-sized line (wrapping only if w
 than ~92% of the frame).
 
 Override the ini location with the `RANDOVERLAY_INI` environment variable.
+
+## Automated live verification
+
+The live runner builds deterministic `rpcs3.exe` and `pcsx2-qt.exe` mock hosts, uses only
+scratch configuration/logs, injects synthetic events, verifies process and preset gating,
+checks clean validation/OBS coexistence, and captures pre/post-event PNGs with overlay-band
+pixel assertions.
+
+```powershell
+.\tests\run_live_tests.ps1 -Mode preflight
+.\tests\run_live_tests.ps1 -Mode all -KeepArtifacts
+.\tests\run_live_tests.ps1 -Mode validation
+.\tests\run_live_tests.ps1 -Mode visual
+```
+
+Artifacts are written under `tests\live\artifacts` and are gitignored. Real RPCS3/PCSX2
+game launching remains a manual certification step because game paths and emulator state
+are machine-specific.
 
 ## Safety / scope
 
@@ -122,4 +140,4 @@ Message: <event text>
 - `src/overlay.cpp`, `src/injector.cpp` — injected-DLL fallback.
 - `RandOverlay_layer.json` — layer manifest.
 - `install_layer.bat` / `uninstall_layer.bat` — registration.
-- `build.bat` — builds everything (with an x86_64 toolchain guard).
+- `build.bat` — builds everything (with x86_64 guard, `--no-pause`, and `--debug`).

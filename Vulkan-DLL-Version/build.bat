@@ -1,5 +1,14 @@
 @echo off
 title RandOverlay Vulkan Build
+set NO_PAUSE=0
+set BUILD_MODE=-O2
+:parse_args
+if "%~1"=="" goto args_done
+if /i "%~1"=="--no-pause" set NO_PAUSE=1
+if /i "%~1"=="--debug" set BUILD_MODE=-O0 -g -fno-omit-frame-pointer
+shift
+goto parse_args
+:args_done
 echo ============================================
 echo   Building RandOverlay Vulkan Overlay
 echo ============================================
@@ -38,7 +47,7 @@ if not exist build mkdir build
 
 :: === [1/4] RandOverlay implicit layer (PRIMARY) ==============================
 echo [1/4] Building RandOverlay_layer.dll (implicit layer + ImGui)...
-"%GCC%" -shared -O2 -std=c++17 ^
+"%GCC%" -shared %BUILD_MODE% -std=c++17 ^
     -DWIN32_LEAN_AND_MEAN -DVK_NO_PROTOTYPES -DIMGUI_IMPL_VULKAN_NO_PROTOTYPES ^
     -I "%VKSDK%\Include" -I %IMGUI% -I %IMGUI%\backends -I src ^
     src\layer.cpp ^
@@ -54,10 +63,10 @@ echo.
 
 :: === [2/4] MinHook (for the injected-DLL fallback) ==========================
 echo [2/4] Building MinHook...
-"%GCC_C%" -c -O2 -DWIN32_LEAN_AND_MEAN -I %MINHOOK%\include %MINHOOK%\src\buffer.c     -o build\buffer.o
-"%GCC_C%" -c -O2 -DWIN32_LEAN_AND_MEAN -I %MINHOOK%\include %MINHOOK%\src\hook.c       -o build\hook.o
-"%GCC_C%" -c -O2 -DWIN32_LEAN_AND_MEAN -I %MINHOOK%\include %MINHOOK%\src\trampoline.c -o build\trampoline.o
-"%GCC_C%" -c -O2 -DWIN32_LEAN_AND_MEAN -I %MINHOOK%\include %MINHOOK%\src\hde\hde64.c  -o build\hde64.o
+"%GCC_C%" -c %BUILD_MODE% -DWIN32_LEAN_AND_MEAN -I %MINHOOK%\include %MINHOOK%\src\buffer.c     -o build\buffer.o
+"%GCC_C%" -c %BUILD_MODE% -DWIN32_LEAN_AND_MEAN -I %MINHOOK%\include %MINHOOK%\src\hook.c       -o build\hook.o
+"%GCC_C%" -c %BUILD_MODE% -DWIN32_LEAN_AND_MEAN -I %MINHOOK%\include %MINHOOK%\src\trampoline.c -o build\trampoline.o
+"%GCC_C%" -c %BUILD_MODE% -DWIN32_LEAN_AND_MEAN -I %MINHOOK%\include %MINHOOK%\src\hde\hde64.c  -o build\hde64.o
 "%AR%" rcs build\libminhook.a build\buffer.o build\hook.o build\trampoline.o build\hde64.o
 if errorlevel 1 goto fail
 echo   MinHook OK
@@ -65,7 +74,7 @@ echo.
 
 :: === [3/4] overlay.dll (injected-DLL FALLBACK) ==============================
 echo [3/4] Building overlay.dll (fallback)...
-"%GCC%" -shared -O2 -std=c++17 -DWIN32_LEAN_AND_MEAN ^
+"%GCC%" -shared %BUILD_MODE% -std=c++17 -DWIN32_LEAN_AND_MEAN ^
     -I "%VKSDK%\Include" -I %MINHOOK%\include -I src ^
     src\overlay.cpp ^
     -o build\overlay.dll ^
@@ -80,7 +89,7 @@ echo.
 
 :: === [4/4] injector.exe (loads overlay.dll into a running emulator) =========
 echo [4/4] Building injector.exe (fallback)...
-"%GCC%" -O2 -std=c++17 -DWIN32_LEAN_AND_MEAN ^
+"%GCC%" %BUILD_MODE% -std=c++17 ^
     src\injector.cpp ^
     -o build\injector.exe ^
     -lkernel32 -luser32 -lpsapi ^
@@ -100,4 +109,4 @@ goto end
 echo.
 echo   BUILD FAILED - check errors above
 :end
-pause
+if "%NO_PAUSE%"=="0" pause
