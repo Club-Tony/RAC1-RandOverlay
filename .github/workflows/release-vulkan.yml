@@ -1,0 +1,84 @@
+name: Build RandOverlay Vulkan Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install x64 MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: mingw-w64-x86_64-gcc
+
+      - name: Install pinned Vulkan SDK
+        shell: pwsh
+        run: |
+          winget install --id KhronosGroup.VulkanSDK --exact --version 1.4.341.1 --silent --accept-source-agreements --accept-package-agreements
+          if ($LASTEXITCODE -ne 0) { throw "Vulkan SDK install failed: $LASTEXITCODE" }
+
+      - name: Fetch pinned build dependencies
+        shell: pwsh
+        working-directory: Vulkan-DLL-Version
+        run: |
+          git clone https://github.com/ocornut/imgui.git deps/imgui
+          git -C deps/imgui checkout 8314fc3e5a10f7c6b670225065fce1dc8cfd396b
+          git clone https://github.com/TsudaKageyu/minhook.git deps/minhook
+          git -C deps/minhook checkout 1e9ad1eb42db11bfcb65461f687c656612d1b555
+
+      - name: Build Vulkan layer and fallback binaries
+        shell: cmd
+        working-directory: Vulkan-DLL-Version
+        env:
+          VULKAN_SDK: C:\VulkanSDK\1.4.341.1
+          RANDOVERLAY_GCC: C:\msys64\mingw64\bin\g++.exe
+          RANDOVERLAY_GCC_C: C:\msys64\mingw64\bin\gcc.exe
+          RANDOVERLAY_AR: C:\msys64\mingw64\bin\ar.exe
+        run: build.bat --no-pause
+
+      - name: Run unit and repository validation
+        shell: pwsh
+        run: |
+          & .\Vulkan-DLL-Version\tests\run_tests.bat
+          if ($LASTEXITCODE -ne 0) { throw "Vulkan units failed: $LASTEXITCODE" }
+          .\Test-RandOverlay.ps1 -SkipAhkRuntime
+
+      - name: Build deterministic release artifacts
+        shell: pwsh
+        run: |
+          $version = (Get-Content .\VERSION -Raw).Trim()
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME.TrimStart('v') -ne $version) {
+            throw "Tag $env:GITHUB_REF_NAME does not match VERSION $version"
+          }
+          .\Vulkan-DLL-Version\installer\Build-RandOverlayRelease.ps1 -Version $version -Format Zip,Exe
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rand-overlay-vulkan
+          path: |
+            Vulkan-DLL-Version/dist/*.zip
+            Vulkan-DLL-Version/dist/*.exe
+            Vulkan-DLL-Version/dist/SHA256SUMS.txt
+
+      - name: Publish GitHub Release assets
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = "Unsigned bootstrap release. Use the ZIP as the primary artifact and verify SHA256SUMS.txt. Windows may show an Unknown Publisher or SmartScreen reputation warning."
+          gh release create $env:GITHUB_REF_NAME .\Vulkan-DLL-Version\dist\*.zip .\Vulkan-DLL-Version\dist\*.exe .\Vulkan-DLL-Version\dist\SHA256SUMS.txt --title "RandOverlay $env:GITHUB_REF_NAME" --notes $notes

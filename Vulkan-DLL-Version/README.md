@@ -28,6 +28,9 @@ the shared repo-root `RandOverlay.ini`, so all three runtimes look consistent.
 - **Run:** RPCS3 (RAC1) or PCSX2 (RAC2/RAC3) using the **Vulkan** renderer, plus a
   running Archipelago client writing to `C:\ProgramData\Archipelago\logs\Launcher_*.txt`.
 
+Release users need only the Run requirements. Build requirements apply to contributors and
+the release workflow, not to the precompiled ZIP/EXE.
+
 ## Build
 
 ```bat
@@ -37,7 +40,30 @@ build.bat --no-pause
 Produces `build\RandOverlay_layer.dll` (primary) and `build\overlay.dll` +
 `build\injector.exe` (fallback). Add `--debug` for symbols and diagnostic builds.
 
-## Install / uninstall (layer)
+## Install / uninstall (release package)
+
+Extract the official release ZIP and run:
+
+```powershell
+powershell -NoProfile -File .\Setup-RandOverlay.ps1
+```
+
+Guided setup defaults to RAC1 and permits any combination of RAC1, RAC2, and RAC3. It
+installs to `%LOCALAPPDATA%\RandOverlay`, checks only dependencies needed by the selected
+games, and registers one canonical per-user manifest. Re-running setup is safe.
+
+```powershell
+.\Setup-RandOverlay.ps1 -Action Status
+.\Setup-RandOverlay.ps1 -Action Repair
+.\Setup-RandOverlay.ps1 -Action Configure -Games RAC1,RAC2 -ActiveGame RAC2
+.\Setup-RandOverlay.ps1 -Action CheckForUpdates
+.\Setup-RandOverlay.ps1 -Action Uninstall
+```
+
+No telemetry is sent. Dependency links and update checks occur only after an explicit user
+action. The optional EXE embeds and verifies the same ZIP before launching setup.
+
+## Developer registration helper
 
 ```bat
 install_layer.bat     :: registers the implicit layer under HKCU (no admin)
@@ -46,7 +72,9 @@ uninstall_layer.bat   :: removes it
 
 Registration adds `RandOverlay_layer.json` to
 `HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers`. The layer then auto-loads the next
-time a supported emulator starts.
+time a supported emulator starts. These BAT files are for source-tree development; release
+users should use the idempotent setup tool, which cleans stale owned registrations and
+preserves unrelated Vulkan layers.
 
 ## Usage
 
@@ -131,6 +159,10 @@ Message: <event text>
   configured `LogDir` and the event matches the interest filter in `log_reader.h`.
 
 ## Files
+
+- `installer/Setup-RandOverlay.ps1` - guided install and maintenance engine.
+- `installer/Build-RandOverlayRelease.ps1` - deterministic ZIP/EXE release builder.
+- `tests/installer/Test-Installer.ps1` - isolated installer lifecycle regression.
 
 - `src/layer.cpp` — the implicit layer (present interception + ImGui text).
 - `src/layer_dispatch.h` — per-instance / per-device dispatch tables.

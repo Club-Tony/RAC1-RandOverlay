@@ -138,12 +138,19 @@ if (-not $SkipGit) {
 }
 
 Invoke-Check "PowerShell parser" {
-    $tokens = $null
-    $errors = $null
-    $scriptPath = Join-Path $Root "PS+WPF-Version\RandOverlay.ps1"
-    [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors) > $null
-    if ($errors.Count) {
-        throw (($errors | ForEach-Object { $_.Message }) -join "; ")
+    foreach ($relativePath in @(
+        "PS+WPF-Version\RandOverlay.ps1",
+        "Vulkan-DLL-Version\installer\Setup-RandOverlay.ps1",
+        "Vulkan-DLL-Version\installer\Build-RandOverlayRelease.ps1",
+        "Vulkan-DLL-Version\tests\installer\Test-Installer.ps1"
+    )) {
+        $tokens = $null
+        $errors = $null
+        $scriptPath = Join-Path $Root $relativePath
+        [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors) > $null
+        if ($errors.Count) {
+            throw "$relativePath`: " + (($errors | ForEach-Object { $_.Message }) -join "; ")
+        }
     }
 }
 

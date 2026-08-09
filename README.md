@@ -25,6 +25,37 @@ RPCS3 and PCSX2 window behavior can differ, especially in fullscreen and borderl
 
 If `RandOverlay.ini` is missing or has invalid values, both runtimes fall back to built-in RAC1-compatible defaults and show/log a short warning.
 
+## Vulkan Release Installation
+
+The Vulkan version draws inside the emulator frame and is intended for exclusive fullscreen.
+Tagged releases publish a precompiled ZIP as the primary download and an optional setup EXE;
+end users do not need build tools.
+
+1. Download only from the official GitHub Releases page and verify `SHA256SUMS.txt`.
+2. Extract `RandOverlay-Vulkan-vX.Y.Z.zip`.
+3. Run `Setup-RandOverlay.ps1`, or use the optional `RandOverlay-Setup-vX.Y.Z.exe`.
+4. Select one or more games. RAC1 is selected by default.
+5. Follow the dependency checks, then launch the selected emulator with Vulkan.
+
+| Selection | Emulator checked by setup | Archipelago client checked by setup |
+| --- | --- | --- |
+| RAC1 (default) | RPCS3 | Ratchet & Clank Client |
+| RAC2 | PCSX2 | Ratchet & Clank 2 Client |
+| RAC3 | PCSX2 | Ratchet and Clank 3 Client |
+
+Setup installs under `%LOCALAPPDATA%\RandOverlay`, supports Status, Repair, Configure,
+Check for updates, and Uninstall, and sends no telemetry. Missing dependencies get a
+confirmed allowlisted WinGet option where available or a clickable official link followed by
+Recheck/Save-and-exit.
+
+Until trusted signing is active, Windows may show an Unknown Publisher or SmartScreen
+reputation warning. This can occur because the project is unsigned or has not established
+reputation; it is not described as a guaranteed false positive. Proceed only with an
+official release whose SHA-256 matches the published checksum.
+
+See [Vulkan setup details](Vulkan-DLL-Version/README.md), [privacy](PRIVACY.md), and
+[release signing](SIGNING.md).
+
 ## Configuration
 
 `RandOverlay.ini` is shared by both runtime versions. The default is `ActivePreset=RAC1`.
@@ -65,6 +96,12 @@ Run the local validation script before committing overlay changes:
 ```
 
 It checks Git whitespace, PowerShell syntax, GitHub issue form shape, AutoHotkey `/iLib` syntax, and a short AHK startup self-test using a temporary Archipelago log directory. Use `-SkipAhkRuntime` if you only want non-GUI checks.
+
+The Vulkan installer lifecycle suite is also available directly:
+
+```powershell
+.\Vulkan-DLL-Version\tests\installer\Test-Installer.ps1
+```
 
 GitHub Actions runs the same validation on push and pull request events, with `-SkipAhkRuntime` because hosted runners are not reliable for overlay window smoke tests.
 

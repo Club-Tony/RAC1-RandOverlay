@@ -41,3 +41,7 @@ jobs:
           } else {
             .\Test-RandOverlay.ps1 -SkipAhkRuntime
           }
+
+      - name: Run Vulkan installer lifecycle tests
+        shell: pwsh
+        run: .\Vulkan-DLL-Version\tests\installer\Test-Installer.ps1

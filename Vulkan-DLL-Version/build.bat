@@ -15,6 +15,7 @@ echo ============================================
 echo.
 
 set VKSDK=C:\VulkanSDK\1.4.341.1
+if not "%VULKAN_SDK%"=="" set VKSDK=%VULKAN_SDK%
 set MINHOOK=deps\minhook
 set IMGUI=deps\imgui
 
@@ -28,6 +29,9 @@ if exist C:\mingw64\bin\gcc.exe set GCC_C=C:\mingw64\bin\gcc
 :: 32-bit MinGW.org binutils, whose archive the x86_64 ld cannot index
 :: ("archive has no index"), breaking the fallback link.
 if exist C:\mingw64\bin\ar.exe set AR=C:\mingw64\bin\ar
+if not "%RANDOVERLAY_GCC%"=="" set GCC=%RANDOVERLAY_GCC%
+if not "%RANDOVERLAY_GCC_C%"=="" set GCC_C=%RANDOVERLAY_GCC_C%
+if not "%RANDOVERLAY_AR%"=="" set AR=%RANDOVERLAY_AR%
 
 :: --- Arch guard: a 32-bit DLL cannot load into RPCS3/PCSX2 (both x64) --------
 set GMACHINE=

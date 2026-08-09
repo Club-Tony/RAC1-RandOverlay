@@ -290,6 +290,7 @@ if ($Mode -eq "preflight") {
         if ($Mode -eq "all") {
             Invoke-Checked "34 unit tests" "cmd.exe" @("/d", "/c", "tests\run_tests.bat") $VulkanRoot
             Invoke-Checked "AHK and PowerShell regression" "powershell.exe" @("-NoProfile", "-File", (Join-Path $RepoRoot "Test-RandOverlay.ps1")) $RepoRoot
+            Invoke-Checked "installer lifecycle" "powershell.exe" @("-NoProfile", "-File", (Join-Path $TestsRoot "installer\Test-Installer.ps1")) $RepoRoot
             Invoke-MockScenario -Name "rac1-normal" -Preset RAC1 -Executable rpcs3.exe
             Invoke-MockScenario -Name "rac1-disabled" -Preset RAC1 -Executable rpcs3.exe -Disabled
             Invoke-MockScenario -Name "rac1-obs" -Preset RAC1 -Executable rpcs3.exe -ObsActive
