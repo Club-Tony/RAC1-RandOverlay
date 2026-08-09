@@ -54,6 +54,7 @@ New-Item -ItemType Directory -Path $payload -Force | Out-Null
 Copy-Item -LiteralPath $LayerDll -Destination (Join-Path $payload 'RandOverlay_layer.dll')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'RandOverlay.ini') -Destination (Join-Path $payload 'RandOverlay.ini')
 Copy-Item -LiteralPath (Join-Path $InstallerRoot 'Setup-RandOverlay.ps1') -Destination (Join-Path $packageRoot 'Setup-RandOverlay.ps1')
+Copy-Item -LiteralPath (Join-Path $InstallerRoot 'Install-RandOverlay.bat') -Destination (Join-Path $packageRoot 'Install-RandOverlay.bat')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'LICENSE') -Destination (Join-Path $packageRoot 'LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'PRIVACY.md') -Destination (Join-Path $packageRoot 'PRIVACY.md')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'THIRD-PARTY-NOTICES.md') -Destination (Join-Path $packageRoot 'THIRD-PARTY-NOTICES.md')
@@ -97,7 +98,9 @@ Write-Json (Join-Path $payload 'release.json') $releaseMetadata
 $installText = @"
 RandOverlay Vulkan v$Version
 
-RECOMMENDED: open PowerShell in this folder and run:
+RECOMMENDED: double-click Install-RandOverlay.bat.
+
+Advanced users can instead open PowerShell in this folder and run:
   powershell -NoProfile -File .\Setup-RandOverlay.ps1
 
 Windows may show Unknown Publisher or SmartScreen warnings while this project is

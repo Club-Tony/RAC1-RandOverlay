@@ -42,7 +42,13 @@ Produces `build\RandOverlay_layer.dll` (primary) and `build\overlay.dll` +
 
 ## Install / uninstall (release package)
 
-Extract the official release ZIP and run:
+Extract the official release ZIP and double-click:
+
+```bat
+Install-RandOverlay.bat
+```
+
+Advanced users can invoke the setup engine directly:
 
 ```powershell
 powershell -NoProfile -File .\Setup-RandOverlay.ps1
@@ -160,6 +166,7 @@ Message: <event text>
 
 ## Files
 
+- `installer/Install-RandOverlay.bat` - double-click release ZIP entrypoint.
 - `installer/Setup-RandOverlay.ps1` - guided install and maintenance engine.
 - `installer/Build-RandOverlayRelease.ps1` - deterministic ZIP/EXE release builder.
 - `tests/installer/Test-Installer.ps1` - isolated installer lifecycle regression.

@@ -61,7 +61,9 @@ try {
     Expand-Archive -LiteralPath $zip.FullName -DestinationPath $expanded
     $releaseRoot = Get-ChildItem -LiteralPath $expanded -Directory | Select-Object -First 1
     $setup = Join-Path $releaseRoot.FullName 'Setup-RandOverlay.ps1'
+    $batchSetup = Join-Path $releaseRoot.FullName 'Install-RandOverlay.bat'
     Assert-True (Test-Path -LiteralPath $setup) 'release contains setup entrypoint'
+    Assert-True (Test-Path -LiteralPath $batchSetup) 'release contains double-click batch entrypoint'
 
     $fakeArch = Join-Path $RunRoot 'Archipelago'
     New-Item -ItemType Directory -Path (Join-Path $fakeArch 'custom_worlds') -Force | Out-Null
@@ -81,6 +83,8 @@ try {
     Assert-True (@($preflight.games).Count -eq 1 -and @($preflight.games)[0] -eq 'RAC1') 'RAC1 is the single-game default contract'
     Assert-True (@($preflight.prerequisites | Where-Object id -eq 'rpcs3').Count -eq 1) 'RAC1 requires RPCS3'
     Assert-True (@($preflight.prerequisites | Where-Object id -eq 'pcsx2').Count -eq 0) 'RAC1 does not require PCSX2'
+    $batchOutput = & cmd.exe /d /c $batchSetup @preflightArgs 2>&1 | Out-String
+    Assert-True ($LASTEXITCODE -eq 0 -and $batchOutput -match '"games"') 'batch entrypoint launches setup and forwards arguments'
     $exeOutput = & $exe.FullName @preflightArgs 2>&1 | Out-String
     Assert-True ($LASTEXITCODE -eq 0 -and $exeOutput -match '"games"') 'EXE bootstrapper extracts and launches setup'
 

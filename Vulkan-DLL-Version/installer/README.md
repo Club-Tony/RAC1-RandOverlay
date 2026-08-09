@@ -13,6 +13,8 @@ End users do not need Git, MinGW, the Vulkan SDK, ImGui, or MinHook.
 Outputs are written to `Vulkan-DLL-Version\dist`: a primary release ZIP, an optional EXE
 bootstrapper, and `SHA256SUMS.txt`. The ZIP has fixed entry ordering and timestamps. The EXE
 embeds that ZIP, verifies its SHA-256 before extraction, and launches the same setup script.
+ZIP users double-click `Install-RandOverlay.bat`; it launches the PowerShell setup from the
+correct extracted directory and keeps the result visible when run interactively.
 
 ## Setup actions
 

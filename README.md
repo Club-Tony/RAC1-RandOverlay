@@ -33,7 +33,7 @@ end users do not need build tools.
 
 1. Download only from the official GitHub Releases page and verify `SHA256SUMS.txt`.
 2. Extract `RandOverlay-Vulkan-vX.Y.Z.zip`.
-3. Run `Setup-RandOverlay.ps1`, or use the optional `RandOverlay-Setup-vX.Y.Z.exe`.
+3. Double-click `Install-RandOverlay.bat`, or use the optional `RandOverlay-Setup-vX.Y.Z.exe`.
 4. Select one or more games. RAC1 is selected by default.
 5. Follow the dependency checks, then launch the selected emulator with Vulkan.
 
