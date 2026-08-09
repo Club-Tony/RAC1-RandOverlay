@@ -44,6 +44,9 @@ function Write-Manifest([string]$Path, [string]$LayerName) {
 
 New-Item -ItemType Directory -Path $RunRoot -Force | Out-Null
 try {
+    $setupSource = Get-Content -LiteralPath (Join-Path $VulkanRoot 'installer\Setup-RandOverlay.ps1') -Raw
+    Assert-True ($setupSource -match '(?s)\$cursorWasVisible\s*=\s*\[Console\]::CursorVisible.*\[Console\]::CursorVisible\s*=\s*\$false.*finally\s*\{\s*\[Console\]::CursorVisible\s*=\s*\$cursorWasVisible') 'interactive checklist hides and restores the console cursor'
+
     $layerDll = Join-Path $VulkanRoot 'build\RandOverlay_layer.dll'
     if (-not (Test-Path -LiteralPath $layerDll)) {
         $layerDll = Join-Path $RunRoot 'RandOverlay_layer.fixture.dll'

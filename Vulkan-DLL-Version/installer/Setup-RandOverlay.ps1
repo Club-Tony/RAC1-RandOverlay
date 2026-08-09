@@ -516,33 +516,39 @@ function Read-GameSelection {
     Write-Host 'This installer contains and verifies the current RandOverlay release ZIP automatically.' -ForegroundColor DarkGray
     Write-Host 'Use Up/Down to move, Space to toggle, and Enter to continue.' -ForegroundColor DarkGray
     $menuTop = [Console]::CursorTop
+    $cursorWasVisible = [Console]::CursorVisible
+    [Console]::CursorVisible = $false
 
-    while ($true) {
-        [Console]::SetCursorPosition(0, $menuTop)
-        for ($i = 0; $i -lt $items.Count; $i++) {
-            $pointer = if ($i -eq $cursor) { '>' } else { ' ' }
-            $mark = if ($checked[$i]) { 'x' } else { ' ' }
-            $line = " $pointer [$mark] $($items[$i].Game) - $($items[$i].Emulator)"
-            $padding = ' ' * [Math]::Max(0, [Console]::WindowWidth - $line.Length - 1)
-            Write-Host ($line + $padding) -ForegroundColor $(if ($i -eq $cursor) { 'Cyan' } else { 'Gray' })
-        }
-        $selectedCount = @($checked | Where-Object { $_ }).Count
-        $status = " Selected: $selectedCount  "
-        Write-Host ($status + (' ' * [Math]::Max(0, [Console]::WindowWidth - $status.Length - 1))) -ForegroundColor DarkGray
+    try {
+        while ($true) {
+            [Console]::SetCursorPosition(0, $menuTop)
+            for ($i = 0; $i -lt $items.Count; $i++) {
+                $pointer = if ($i -eq $cursor) { '>' } else { ' ' }
+                $mark = if ($checked[$i]) { 'x' } else { ' ' }
+                $line = " $pointer [$mark] $($items[$i].Game) - $($items[$i].Emulator)"
+                $padding = ' ' * [Math]::Max(0, [Console]::WindowWidth - $line.Length - 1)
+                Write-Host ($line + $padding) -ForegroundColor $(if ($i -eq $cursor) { 'Cyan' } else { 'Gray' })
+            }
+            $selectedCount = @($checked | Where-Object { $_ }).Count
+            $status = " Selected: $selectedCount  "
+            Write-Host ($status + (' ' * [Math]::Max(0, [Console]::WindowWidth - $status.Length - 1))) -ForegroundColor DarkGray
 
-        $key = [Console]::ReadKey($true).Key
-        switch ($key) {
-            'UpArrow'   { $cursor = ($cursor + $items.Count - 1) % $items.Count }
-            'DownArrow' { $cursor = ($cursor + 1) % $items.Count }
-            'Spacebar'  { $checked[$cursor] = -not $checked[$cursor] }
-            'Enter' {
-                if ($selectedCount -gt 0) {
-                    Write-Host ''
-                    return Normalize-Games @($(for ($i = 0; $i -lt $items.Count; $i++) { if ($checked[$i]) { $items[$i].Game } }))
+            $key = [Console]::ReadKey($true).Key
+            switch ($key) {
+                'UpArrow'   { $cursor = ($cursor + $items.Count - 1) % $items.Count }
+                'DownArrow' { $cursor = ($cursor + 1) % $items.Count }
+                'Spacebar'  { $checked[$cursor] = -not $checked[$cursor] }
+                'Enter' {
+                    if ($selectedCount -gt 0) {
+                        Write-Host ''
+                        return Normalize-Games @($(for ($i = 0; $i -lt $items.Count; $i++) { if ($checked[$i]) { $items[$i].Game } }))
+                    }
+                    [Console]::Beep()
                 }
-                [Console]::Beep()
             }
         }
+    } finally {
+        [Console]::CursorVisible = $cursorWasVisible
     }
 }
 
