@@ -1,5 +1,6 @@
 @echo off
 setlocal
+title RAC RandOverlay Setup
 cd /d "%~dp0"
 
 where powershell.exe >nul 2>&1

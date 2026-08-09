@@ -7,14 +7,14 @@ End users do not need Git, MinGW, the Vulkan SDK, ImGui, or MinHook.
 
 ```powershell
 ..\build.bat --no-pause
-.\Build-RandOverlayRelease.ps1 -Format Zip,Exe
+.\Build-RandOverlayRelease.ps1 -Format Bat,Zip,Exe
 ```
 
-Outputs are written to `Vulkan-DLL-Version\dist`: a primary release ZIP, an optional EXE
-bootstrapper, and `SHA256SUMS.txt`. The ZIP has fixed entry ordering and timestamps. The EXE
-embeds that ZIP, verifies its SHA-256 before extraction, and launches the same setup script.
-ZIP users double-click `Install-RandOverlay.bat`; it launches the PowerShell setup from the
-correct extracted directory and keeps the result visible when run interactively.
+Outputs are written to `Vulkan-DLL-Version\dist`: a primary self-contained BAT, the
+transparent release ZIP, an optional EXE bootstrapper, and `SHA256SUMS.txt`. The ZIP has fixed
+entry ordering and timestamps. Both bootstrappers carry that exact ZIP, verify its SHA-256
+before extraction, and launch the same setup script. The BAT clearly explains this handoff.
+ZIP users can double-click `Install-RandOverlay.bat` after extraction.
 
 ## Setup actions
 
@@ -37,7 +37,7 @@ registered per user.
 ..\tests\installer\Test-Installer.ps1
 ```
 
-The isolated suite covers deterministic packaging, the EXE bootstrap, selection-aware
+The isolated suite covers deterministic packaging, the self-contained BAT and EXE bootstraps, selection-aware
 prerequisites, install/rerun/configure, unrelated-layer preservation, tamper detection,
 repair, rollback, configuration preservation, and uninstall. It never writes production
 Vulkan registration or Archipelago logs.

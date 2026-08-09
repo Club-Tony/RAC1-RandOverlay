@@ -63,7 +63,7 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME.TrimStart('v') -ne $version) {
             throw "Tag $env:GITHUB_REF_NAME does not match VERSION $version"
           }
-          .\Vulkan-DLL-Version\installer\Build-RandOverlayRelease.ps1 -Version $version -Format Zip,Exe
+          .\Vulkan-DLL-Version\installer\Build-RandOverlayRelease.ps1 -Version $version -Format Bat,Zip,Exe
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
@@ -71,6 +71,7 @@ jobs:
           name: rand-overlay-vulkan
           path: |
             Vulkan-DLL-Version/dist/*.zip
+            Vulkan-DLL-Version/dist/*.bat
             Vulkan-DLL-Version/dist/*.exe
             Vulkan-DLL-Version/dist/SHA256SUMS.txt
 
@@ -80,5 +81,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $notes = "Unsigned bootstrap release. Use the ZIP as the primary artifact and verify SHA256SUMS.txt. Windows may show an Unknown Publisher or SmartScreen reputation warning."
-          gh release create $env:GITHUB_REF_NAME .\Vulkan-DLL-Version\dist\*.zip .\Vulkan-DLL-Version\dist\*.exe .\Vulkan-DLL-Version\dist\SHA256SUMS.txt --title "RandOverlay $env:GITHUB_REF_NAME" --notes $notes
+          $notes = "Unsigned bootstrap release. The self-contained BAT is the primary artifact: it embeds, verifies, and automatically installs the same release ZIP. Windows may show an Unknown Publisher or SmartScreen reputation warning."
+          gh release create $env:GITHUB_REF_NAME .\Vulkan-DLL-Version\dist\*.bat .\Vulkan-DLL-Version\dist\*.zip .\Vulkan-DLL-Version\dist\*.exe .\Vulkan-DLL-Version\dist\SHA256SUMS.txt --title "RandOverlay $env:GITHUB_REF_NAME" --notes $notes

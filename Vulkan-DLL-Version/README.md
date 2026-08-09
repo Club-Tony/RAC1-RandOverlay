@@ -42,7 +42,11 @@ Produces `build\RandOverlay_layer.dll` (primary) and `build\overlay.dll` +
 
 ## Install / uninstall (release package)
 
-Extract the official release ZIP and double-click:
+For the one-file path, download and double-click `RandOverlay-Setup-vX.Y.Z.bat`. It embeds,
+SHA-256 verifies, and temporarily extracts the same versioned release ZIP before handing off
+to guided setup.
+
+For the transparent package path, extract the official release ZIP and double-click:
 
 ```bat
 Install-RandOverlay.bat
@@ -168,7 +172,7 @@ Message: <event text>
 
 - `installer/Install-RandOverlay.bat` - double-click release ZIP entrypoint.
 - `installer/Setup-RandOverlay.ps1` - guided install and maintenance engine.
-- `installer/Build-RandOverlayRelease.ps1` - deterministic ZIP/EXE release builder.
+- `installer/Build-RandOverlayRelease.ps1` - deterministic self-contained BAT/ZIP/EXE release builder.
 - `tests/installer/Test-Installer.ps1` - isolated installer lifecycle regression.
 
 - `src/layer.cpp` — the implicit layer (present interception + ImGui text).

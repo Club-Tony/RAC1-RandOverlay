@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Version,
-    [ValidateSet('Zip','Exe')][string[]]$Format = @('Zip','Exe'),
+    [ValidateSet('Bat','Zip','Exe')][string[]]$Format = @('Bat','Zip','Exe'),
     [string]$OutputRoot,
     [string]$LayerDll,
     [switch]$NoClean
@@ -41,6 +41,73 @@ function New-DeterministicZip([string]$Source, [string]$Destination) {
             }
         } finally { $archive.Dispose() }
     } finally { $stream.Dispose() }
+}
+
+function New-SelfExtractingBat([string]$ZipPath, [string]$Destination) {
+    $sha = Get-Sha $ZipPath
+    $extractor = @'
+param([Parameter(Mandatory)][string]$SelfPath, [Parameter(Mandatory)][string]$ExpectedSha256)
+$ErrorActionPreference = 'Stop'
+$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('RandOverlaySetup-' + [guid]::NewGuid().ToString('N'))
+try {
+    New-Item -ItemType Directory -Path $tempRoot | Out-Null
+    $zipPath = Join-Path $tempRoot 'RandOverlay-Vulkan.zip'
+    Write-Host 'RandOverlay one-click installer' -ForegroundColor Cyan
+    Write-Host 'This BAT contains and automatically installs the current release ZIP.' -ForegroundColor DarkGray
+    Write-Host 'Decoding embedded release ZIP...' -ForegroundColor Cyan
+    $text = [IO.File]::ReadAllText($SelfPath)
+    $marker = '#===PAYLOAD==='
+    $index = $text.LastIndexOf($marker)
+    if ($index -lt 0) { throw 'Embedded payload marker is missing. Re-download the installer.' }
+    [IO.File]::WriteAllBytes($zipPath, [Convert]::FromBase64String($text.Substring($index + $marker.Length).Trim()))
+    $actualSha = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToUpperInvariant()
+    if ($actualSha -ne $ExpectedSha256) { throw "Embedded ZIP failed verification. Expected $ExpectedSha256; got $actualSha." }
+    Write-Host "[OK] Embedded ZIP verified: $actualSha" -ForegroundColor Green
+    $expanded = Join-Path $tempRoot 'expanded'
+    Expand-Archive -LiteralPath $zipPath -DestinationPath $expanded
+    Get-ChildItem -LiteralPath $expanded -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
+    $setup = Get-ChildItem -LiteralPath $expanded -Filter 'Setup-RandOverlay.ps1' -Recurse | Select-Object -First 1
+    if (-not $setup) { throw 'Setup-RandOverlay.ps1 is missing from the embedded release.' }
+    if ($env:RANDOVERLAY_BUNDLE_NOLAUNCH -eq '1') {
+        Write-Host '[OK] Self-contained BAT decode/extract verification passed.' -ForegroundColor Green
+        exit 0
+    }
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $setup.FullName
+    exit $LASTEXITCODE
+} catch {
+    Write-Host ''
+    Write-Host "Installer stopped safely: $($_.Exception.Message)" -ForegroundColor Red
+    exit 9
+} finally {
+    if ([IO.Directory]::Exists($tempRoot)) { [IO.Directory]::Delete($tempRoot, $true) }
+}
+'@
+    $stub = @"
+@echo off
+setlocal EnableExtensions DisableDelayedExpansion
+title RAC RandOverlay Setup
+set "RANDOVERLAY_SELF=%~f0"
+set "RANDOVERLAY_EXTRACTOR=%TEMP%\RandOverlay-Extract-%RANDOM%-%RANDOM%.ps1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "`$t=[IO.File]::ReadAllText(`$env:RANDOVERLAY_SELF);`$i=`$t.LastIndexOf('#===EXTRACTOR===');if(`$i -lt 0){exit 9};[IO.File]::WriteAllText(`$env:RANDOVERLAY_EXTRACTOR,`$t.Substring(`$i))"
+if errorlevel 1 goto :stagefailed
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%RANDOVERLAY_EXTRACTOR%" -SelfPath "%RANDOVERLAY_SELF%" -ExpectedSha256 "$sha"
+set "RANDOVERLAY_EXIT=%ERRORLEVEL%"
+del "%RANDOVERLAY_EXTRACTOR%" >nul 2>&1
+if not "%RANDOVERLAY_BUNDLE_NOLAUNCH%"=="1" pause
+exit /b %RANDOVERLAY_EXIT%
+:stagefailed
+echo Could not stage the embedded installer. The BAT may be incomplete or corrupt.
+del "%RANDOVERLAY_EXTRACTOR%" >nul 2>&1
+pause
+exit /b 9
+#===EXTRACTOR===
+"@
+    $payload = [Convert]::ToBase64String([IO.File]::ReadAllBytes($ZipPath))
+    $builder = [Text.StringBuilder]::new()
+    foreach ($line in ($stub -split "`r?`n")) { [void]$builder.Append($line).Append("`r`n") }
+    foreach ($line in ($extractor -split "`r?`n")) { [void]$builder.Append($line).Append("`r`n") }
+    [void]$builder.Append("`r`n#===PAYLOAD===`r`n").Append($payload).Append("`r`n")
+    [IO.File]::WriteAllText($Destination, $builder.ToString(), [Text.Encoding]::ASCII)
 }
 
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
@@ -117,13 +184,19 @@ New-DeterministicZip $work $zipPath
 $outputs = [System.Collections.Generic.List[string]]::new()
 $outputs.Add($zipPath)
 
+if ($Format -contains 'Bat') {
+    $batPath = Join-Path $OutputRoot "RandOverlay-Setup-v$Version.bat"
+    New-SelfExtractingBat -ZipPath $zipPath -Destination $batPath
+    $outputs.Insert(0, $batPath)
+}
+
 if ($Format -contains 'Exe') {
     $csc = @(
         (Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'),
         (Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe'),
         (Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'csc.exe')
     ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    if (-not (Test-Path -LiteralPath $csc)) { throw 'The in-box C# compiler is unavailable; build with -Format Zip or install .NET Framework tools.' }
+    if (-not (Test-Path -LiteralPath $csc)) { throw 'The in-box C# compiler is unavailable; build with -Format Bat,Zip or install .NET Framework tools.' }
     $bootstrapSource = Get-Content -LiteralPath (Join-Path $InstallerRoot 'Bootstrap.cs') -Raw
     $bootstrapSource = $bootstrapSource.Replace('__PAYLOAD_SHA256__', (Get-Sha $zipPath))
     $generatedSource = Join-Path $work 'Bootstrap.generated.cs'

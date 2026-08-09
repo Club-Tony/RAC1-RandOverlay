@@ -49,11 +49,17 @@ try {
         $layerDll = Join-Path $RunRoot 'RandOverlay_layer.fixture.dll'
         Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\version.dll') -Destination $layerDll
     }
-    & (Join-Path $VulkanRoot 'installer\Build-RandOverlayRelease.ps1') -Format Zip,Exe -LayerDll $layerDll -OutputRoot (Join-Path $RunRoot 'dist')
+    & (Join-Path $VulkanRoot 'installer\Build-RandOverlayRelease.ps1') -Format Bat,Zip,Exe -LayerDll $layerDll -OutputRoot (Join-Path $RunRoot 'dist')
     $zip = Get-ChildItem -LiteralPath (Join-Path $RunRoot 'dist') -Filter 'RandOverlay-Vulkan-*.zip' | Select-Object -First 1
+    $selfExtractingBat = Get-ChildItem -LiteralPath (Join-Path $RunRoot 'dist') -Filter 'RandOverlay-Setup-*.bat' | Select-Object -First 1
     $exe = Get-ChildItem -LiteralPath (Join-Path $RunRoot 'dist') -Filter 'RandOverlay-Setup-*.exe' | Select-Object -First 1
     Assert-True ([bool]$zip) 'release ZIP built'
+    Assert-True ([bool]$selfExtractingBat) 'primary self-contained BAT built'
     Assert-True ([bool]$exe) 'optional EXE bootstrapper built'
+    $env:RANDOVERLAY_BUNDLE_NOLAUNCH = '1'
+    try { $bundleOutput = & cmd.exe /d /c $selfExtractingBat.FullName 2>&1 | Out-String; $bundleExit = $LASTEXITCODE }
+    finally { Remove-Item Env:RANDOVERLAY_BUNDLE_NOLAUNCH -ErrorAction SilentlyContinue }
+    Assert-True ($bundleExit -eq 0 -and $bundleOutput -match 'Embedded ZIP verified' -and $bundleOutput -match 'decode/extract verification passed') 'self-contained BAT verifies and extracts embedded ZIP'
     & (Join-Path $VulkanRoot 'installer\Build-RandOverlayRelease.ps1') -Format Zip -LayerDll $layerDll -OutputRoot (Join-Path $RunRoot 'dist-second') | Out-Null
     $secondZip = Get-ChildItem -LiteralPath (Join-Path $RunRoot 'dist-second') -Filter 'RandOverlay-Vulkan-*.zip' | Select-Object -First 1
     Assert-True ((Get-FileHash $zip.FullName -Algorithm SHA256).Hash -eq (Get-FileHash $secondZip.FullName -Algorithm SHA256).Hash) 'release ZIP rebuild is deterministic'

@@ -28,12 +28,15 @@ If `RandOverlay.ini` is missing or has invalid values, both runtimes fall back t
 ## Vulkan Release Installation
 
 The Vulkan version draws inside the emulator frame and is intended for exclusive fullscreen.
-Tagged releases publish a precompiled ZIP as the primary download and an optional setup EXE;
+Tagged releases publish a self-contained setup BAT as the primary download, plus the same
+payload as a transparent ZIP and an optional setup EXE;
 end users do not need build tools.
 
 1. Download only from the official GitHub Releases page and verify `SHA256SUMS.txt`.
-2. Extract `RandOverlay-Vulkan-vX.Y.Z.zip`.
-3. Double-click `Install-RandOverlay.bat`, or use the optional `RandOverlay-Setup-vX.Y.Z.exe`.
+2. Double-click `RandOverlay-Setup-vX.Y.Z.bat`. It contains, verifies, and automatically
+   installs the current `RandOverlay-Vulkan-vX.Y.Z.zip` payload.
+3. Alternatively, extract the ZIP and double-click its `Install-RandOverlay.bat`, or use the
+   optional `RandOverlay-Setup-vX.Y.Z.exe`.
 4. Select one or more games. RAC1 is selected by default.
 5. Follow the dependency checks, then launch the selected emulator with Vulkan.
 

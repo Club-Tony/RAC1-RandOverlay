@@ -21,6 +21,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
+try { [Console]::Title = 'RAC RandOverlay Setup' } catch { }
+
 $script:LayerName = 'VK_LAYER_RANDOVERLAY_overlay'
 $script:RepoApi = 'https://api.github.com/repos/Club-Tony/RAC1-RandOverlay'
 $script:GameCatalog = [ordered]@{
@@ -493,15 +495,55 @@ function Invoke-Uninstall {
 }
 
 function Read-GameSelection {
-    Write-Host 'Select games (comma-separated; default RAC1):'
-    Write-Host '[1] RAC1 - RPCS3'
-    Write-Host '[2] RAC2 - PCSX2'
-    Write-Host '[3] RAC3 - PCSX2'
-    $answer = (Read-Host 'Selection').Trim()
-    if (-not $answer) { return @('RAC1') }
-    $map = @{ '1'='RAC1'; '2'='RAC2'; '3'='RAC3'; 'RAC1'='RAC1'; 'RAC2'='RAC2'; 'RAC3'='RAC3' }
-    $chosen = @($answer -split ',' | ForEach-Object { $map[$_.Trim().ToUpperInvariant()] } | Where-Object { $_ } | Select-Object -Unique)
-    Normalize-Games $chosen
+    $items = @(
+        [pscustomobject]@{ Game='RAC1'; Emulator='RPCS3' },
+        [pscustomobject]@{ Game='RAC2'; Emulator='PCSX2' },
+        [pscustomobject]@{ Game='RAC3'; Emulator='PCSX2' }
+    )
+
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+        Write-Host 'Select games (comma-separated; default RAC1):'
+        for ($i = 0; $i -lt $items.Count; $i++) { Write-Host "[$($i + 1)] $($items[$i].Game) - $($items[$i].Emulator)" }
+        $answer = (Read-Host 'Selection').Trim()
+        if (-not $answer) { return @('RAC1') }
+        $map = @{ '1'='RAC1'; '2'='RAC2'; '3'='RAC3'; 'RAC1'='RAC1'; 'RAC2'='RAC2'; 'RAC3'='RAC3' }
+        return Normalize-Games @($answer -split ',' | ForEach-Object { $map[$_.Trim().ToUpperInvariant()] } | Where-Object { $_ } | Select-Object -Unique)
+    }
+
+    $checked = @($true, $false, $false)
+    $cursor = 0
+    Write-Step 'Choose games'
+    Write-Host 'This installer contains and verifies the current RandOverlay release ZIP automatically.' -ForegroundColor DarkGray
+    Write-Host 'Use Up/Down to move, Space to toggle, and Enter to continue.' -ForegroundColor DarkGray
+    $menuTop = [Console]::CursorTop
+
+    while ($true) {
+        [Console]::SetCursorPosition(0, $menuTop)
+        for ($i = 0; $i -lt $items.Count; $i++) {
+            $pointer = if ($i -eq $cursor) { '>' } else { ' ' }
+            $mark = if ($checked[$i]) { 'x' } else { ' ' }
+            $line = " $pointer [$mark] $($items[$i].Game) - $($items[$i].Emulator)"
+            $padding = ' ' * [Math]::Max(0, [Console]::WindowWidth - $line.Length - 1)
+            Write-Host ($line + $padding) -ForegroundColor $(if ($i -eq $cursor) { 'Cyan' } else { 'Gray' })
+        }
+        $selectedCount = @($checked | Where-Object { $_ }).Count
+        $status = " Selected: $selectedCount  "
+        Write-Host ($status + (' ' * [Math]::Max(0, [Console]::WindowWidth - $status.Length - 1))) -ForegroundColor DarkGray
+
+        $key = [Console]::ReadKey($true).Key
+        switch ($key) {
+            'UpArrow'   { $cursor = ($cursor + $items.Count - 1) % $items.Count }
+            'DownArrow' { $cursor = ($cursor + 1) % $items.Count }
+            'Spacebar'  { $checked[$cursor] = -not $checked[$cursor] }
+            'Enter' {
+                if ($selectedCount -gt 0) {
+                    Write-Host ''
+                    return Normalize-Games @($(for ($i = 0; $i -lt $items.Count; $i++) { if ($checked[$i]) { $items[$i].Game } }))
+                }
+                [Console]::Beep()
+            }
+        }
+    }
 }
 
 function Invoke-Preflight {
