@@ -31,6 +31,29 @@ int main(int argc, char** argv) {
     CHECK(rogate::listContains("RPCS3.EXE", "rpcs3.exe"),                 "case-insensitive (list uppercased)");
     CHECK(!rogate::listContains("rpcs3.exe", "notepad.exe"),             "notepad.exe does NOT match");
     CHECK(!rogate::listContains("", "rpcs3.exe"),                        "empty list matches nothing");
+    CHECK(rogate::isProcessEnabledForPresets("rpcs3.exe", "RAC1,RAC2,RAC3"),
+          "enabled RAC1 permits RPCS3");
+    CHECK(!rogate::isProcessEnabledForPresets("pcsx2-qt.exe", "RAC1"),
+          "RAC1-only selection does not permit PCSX2");
+
+    printf("[automatic preset detection]\n");
+    const std::vector<std::string> noTitles;
+    CHECK(rogate::detectPreset("rpcs3.exe", "RAC1,RAC2,RAC3", noTitles, noTitles) == "RAC1",
+          "RPCS3 deterministically selects RAC1");
+    CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2", noTitles, noTitles) == "RAC2",
+          "single enabled PCSX2 game needs no title signal");
+    CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2,RAC3",
+                               {"Ratchet & Clank: Going Commando | PCSX2"}, noTitles) == "RAC2",
+          "Going Commando window selects RAC2");
+    CHECK(rogate::detectPreset("pcsx2.exe", "RAC1,RAC2,RAC3",
+                               {"Ratchet & Clank: Up Your Arsenal | PCSX2"}, noTitles) == "RAC3",
+          "Up Your Arsenal window selects RAC3");
+    CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2,RAC3", noTitles,
+                               {"Ratchet & Clank 2 Client"}) == "RAC2",
+          "Archipelago client title is a fallback RAC2 signal");
+    CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2,RAC3",
+                               {"Ratchet & Clank 2", "Ratchet & Clank 3"}, noTitles).empty(),
+          "conflicting PCSX2 titles never guess a preset");
 
     // ── config / ini parsing ──────────────────────────────────────────────
     printf("[config] ini=%s\n", argc > 1 ? argv[1] : "(none supplied)");
@@ -53,17 +76,26 @@ int main(int argc, char** argv) {
     CHECK(cfg.fontFallback == "Bahnschrift",    "FontFallback = Bahnschrift");
     CHECK(cfg.clientComponent == "Ratchet & Clank Client",
           "RAC1 ClientComponent = Ratchet & Clank Client");
+    CHECK(cfg.enabledPresets == "RAC1", "legacy INI falls back to ActivePreset as enabled set");
 
     // Preset-derived ClientComponent default (RAC3 preset, no explicit key)
     {
         char tmpP[MAX_PATH]; GetTempPathA(MAX_PATH, tmpP);
         std::string mini = std::string(tmpP) + "randoverlay_mini.ini";
         FILE* f = fopen(mini.c_str(), "w");
-        if (f) { fprintf(f, "[General]\nActivePreset=RAC3\n"); fclose(f); }
+        if (f) {
+            fprintf(f, "[General]\nActivePreset=RAC3\nEnabledPresets=RAC1,RAC2,RAC3\n");
+            fclose(f);
+        }
         SetEnvironmentVariableA("RANDOVERLAY_INI", mini.c_str());
         RandOverlayConfig c3; c3.load();
         CHECK(c3.clientComponent == "Ratchet and Clank 3 Client",
               "RAC3 default ClientComponent derived from preset");
+        CHECK(c3.enabledPresets == "RAC1,RAC2,RAC3", "EnabledPresets list loaded");
+        c3.load("RAC2");
+        CHECK(c3.activePreset == "RAC2" && c3.clientComponent == "Ratchet & Clank 2 Client" &&
+              c3.emulatorProcs.find("pcsx2") != std::string::npos,
+              "runtime preset override reloads RAC2 configuration");
         DeleteFileA(mini.c_str());
         if (argc > 1) SetEnvironmentVariableA("RANDOVERLAY_INI", argv[1]); // restore
     }

@@ -16,6 +16,7 @@
 
 struct RandOverlayConfig {
     std::string activePreset  = "RAC1";
+    std::string enabledPresets = "RAC1";
     std::string logDir        = "C:\\ProgramData\\Archipelago\\logs";
     std::string launcherExe   = "C:\\ProgramData\\Archipelago\\ArchipelagoLauncher.exe";
     std::string emulatorProcs = "rpcs3.exe";
@@ -37,7 +38,7 @@ struct RandOverlayConfig {
     std::string iniPathUsed;                              // for diagnostics
     bool  loaded              = false;
 
-    void load();
+    void load(const std::string& presetOverride = "");
 };
 
 namespace rocfg_detail {
@@ -107,7 +108,7 @@ inline std::string resolveIniPath() {
 
 } // namespace rocfg_detail
 
-inline void RandOverlayConfig::load() {
+inline void RandOverlayConfig::load(const std::string& presetOverride) {
     using namespace rocfg_detail;
     std::string ini = resolveIniPath();
     iniPathUsed = ini;
@@ -138,6 +139,9 @@ inline void RandOverlayConfig::load() {
 
     std::string tmp;
     if (get("General", "ActivePreset", tmp) && !tmp.empty()) activePreset = tmp;
+    if (get("General", "EnabledPresets", tmp) && !tmp.empty()) enabledPresets = tmp;
+    else enabledPresets = activePreset; // compatibility with pre-auto-detection INIs
+    if (!presetOverride.empty()) activePreset = presetOverride;
     if (get("General", "LogDir", tmp) && !tmp.empty())        logDir = tmp;
     if (get("General", "LauncherExe", tmp) && !tmp.empty())   launcherExe = tmp;
     if (get("General", "DisplayMs", tmp))                     { try { displayMs = std::stoi(tmp); } catch (...) {} }
@@ -147,10 +151,17 @@ inline void RandOverlayConfig::load() {
 
     std::string psec = "Preset." + activePreset;
 
-    // Preset-derived launcher component (names as shown in the Archipelago
-    // Launcher UI; RAC2/RAC3 clients are apworld-provided components).
-    if (activePreset == "RAC2")      clientComponent = "Ratchet & Clank 2 Client";
-    else if (activePreset == "RAC3") clientComponent = "Ratchet and Clank 3 Client";
+    // Reset preset-derived defaults before applying a runtime switch.
+    if (activePreset == "RAC2") {
+        emulatorProcs = "pcsx2-qt.exe,pcsx2.exe";
+        clientComponent = "Ratchet & Clank 2 Client";
+    } else if (activePreset == "RAC3") {
+        emulatorProcs = "pcsx2-qt.exe,pcsx2.exe";
+        clientComponent = "Ratchet and Clank 3 Client";
+    } else {
+        emulatorProcs = "rpcs3.exe";
+        clientComponent = "Ratchet & Clank Client";
+    }
 
     if (get(psec, "EmulatorProcesses", tmp) && !tmp.empty())  emulatorProcs = tmp;
     if (get(psec, "ClientComponent", tmp) && !tmp.empty())    clientComponent = tmp;

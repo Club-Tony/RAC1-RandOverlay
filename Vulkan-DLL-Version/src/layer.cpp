@@ -68,6 +68,61 @@ static std::string g_currentMessage;
 static ULONGLONG g_messageTimestamp = 0;
 static ULONGLONG g_lastPollTick = 0;      // parity: poll the log at PollMs, not per frame
 static bool g_readyMessageShown = false;  // parity: one-time startup notification
+static bool g_presetResolved = false;
+
+struct RuntimePresetSignals {
+    DWORD emulatorPid;
+    std::vector<std::string> emulatorTitles;
+    std::vector<std::string> clientTitles;
+};
+
+static BOOL CALLBACK CollectPresetWindowTitles(HWND hwnd, LPARAM value) {
+    auto* signals = reinterpret_cast<RuntimePresetSignals*>(value);
+    int length = GetWindowTextLengthA(hwnd);
+    if (length <= 0) return TRUE;
+    std::vector<char> text((size_t)length + 1, 0);
+    GetWindowTextA(hwnd, text.data(), (int)text.size());
+    std::string title(text.data());
+    if (title.empty()) return TRUE;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == signals->emulatorPid) {
+        signals->emulatorTitles.push_back(title);
+    } else {
+        std::string lower = title;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return (char)std::tolower(c); });
+        if (lower.find("ratchet") != std::string::npos &&
+            lower.find("client") != std::string::npos)
+            signals->clientTitles.push_back(title);
+    }
+    return TRUE;
+}
+
+static bool RefreshRuntimePreset() {
+    RuntimePresetSignals signals = { GetCurrentProcessId(), {}, {} };
+    EnumWindows(CollectPresetWindowTitles, reinterpret_cast<LPARAM>(&signals));
+    std::string detected = rogate::detectPreset(
+        rogate::currentProcessExeLower(), g_config.enabledPresets,
+        signals.emulatorTitles, signals.clientTitles);
+
+    if (detected.empty()) {
+        if (g_presetResolved) {
+            LayerLog("Automatic preset became unresolved; event overlay paused");
+            g_currentMessage.clear();
+        }
+        g_presetResolved = false;
+        return false;
+    }
+    if (!g_presetResolved || detected != g_config.activePreset) {
+        std::string previous = g_config.activePreset;
+        g_config.load(detected);
+        LayerLog("Automatic preset: %s -> %s", previous.c_str(), detected.c_str());
+    }
+    g_presetResolved = true;
+    return true;
+}
 
 // Message alpha lifecycle (parity with AHK/PS fade behavior):
 // fade in over FadeInMs (inside the hold window), hold until DisplayMs,
@@ -112,6 +167,16 @@ static std::vector<VkSemaphore>   g_overlaySems; // one per swapchain image
 static bool g_renderReady = false;
 static bool g_imguiReady  = false;
 static ULONGLONG g_lastPresentTick = 0;
+
+static void ShowReadyIfPossible() {
+    if (!g_renderReady || !g_presetResolved || g_readyMessageShown) return;
+    g_readyMessageShown = true;
+    g_currentMessage = "Archipelago Overlay ready - waiting for events";
+    g_messageTimestamp = GetTickCount64();
+    roarch::promptIfNotRunning(g_config.launcherExe,
+                               g_config.activePreset,
+                               g_config.clientComponent);
+}
 
 static VkResult VKAPI_CALL AllocateLayerCommandBuffers(
     VkDevice device,
@@ -456,15 +521,19 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_CreateInstance(
     // Environment kill-switch (also declared in the layer manifest).
     const char* off = getenv("DISABLE_RANDOVERLAY");
     bool envOff = (off && strcmp(off, "1") == 0);
-    bool targeted = rogate::isTargetProcess(g_config.emulatorProcs);
+    std::string processExe = rogate::currentProcessExeLower();
+    bool targeted = rogate::isTargetProcess(g_config.emulatorProcs) &&
+                    rogate::isProcessEnabledForPresets(processExe, g_config.enabledPresets);
     g_disabled = envOff || !targeted;
+    if (!g_disabled) RefreshRuntimePreset();
 
     LayerLog("=== RandOverlay Layer loaded ===");
     LayerLog("vkCreateInstance OK, instance=0x%p", (void*)*pInstance);
-    LayerLog("process=%s, ini=%s, preset=%s, disabled=%d (envOff=%d, targeted=%d)",
-             rogate::currentProcessExeLower().c_str(),
+    LayerLog("process=%s, ini=%s, enabled=%s, preset=%s, resolved=%d, disabled=%d (envOff=%d, targeted=%d)",
+             processExe.c_str(),
              g_config.iniPathUsed.empty() ? "(defaults)" : g_config.iniPathUsed.c_str(),
-             g_config.activePreset.c_str(), (int)g_disabled, (int)envOff, (int)targeted);
+             g_config.enabledPresets.c_str(), g_config.activePreset.c_str(),
+             (int)g_presetResolved, (int)g_disabled, (int)envOff, (int)targeted);
 
     if (!g_disabled && !g_logReader) {
         g_logReader = new LogReader(g_config.logDir);
@@ -543,20 +612,11 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_CreateSwapchainKHR(
     g_device     = device;
 
     if (!g_disabled) {
+        RefreshRuntimePreset();
         if (!SetupRender(device)) {
             LayerLog("SetupRender failed — overlay disabled, passing through");
             CleanupRender(device); // never break the game
-        } else if (!g_readyMessageShown) {
-            // Parity: AHK/PS show a one-time startup notification.
-            g_readyMessageShown = true;
-            g_currentMessage = "Archipelago Overlay ready - waiting for events";
-            g_messageTimestamp = GetTickCount64();
-            // Parity with the AHK startup check: offer to launch Archipelago
-            // if it isn't running (non-blocking; RANDOVERLAY_NO_PROMPT=1 skips).
-            roarch::promptIfNotRunning(g_config.launcherExe,
-                                       g_config.activePreset,
-                                       g_config.clientComponent);
-        }
+        } else ShowReadyIfPossible();
     }
     return VK_SUCCESS;
 }
@@ -576,14 +636,18 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_QueuePresentKHR(
     ULONGLONG now = GetTickCount64();
     if (!g_disabled && g_logReader && (now - g_lastPollTick) >= (ULONGLONG)g_config.pollMs) {
         g_lastPollTick = now;
-        std::string before = g_logReader->currentLogFile();
-        auto msgs = g_logReader->poll();
-        if (g_logReader->currentLogFile() != before)
-            LayerLog("Log switched: %s", g_logReader->currentLogFile().c_str());
-        if (!msgs.empty()) {
-            g_currentMessage = msgs.back().text;
-            g_messageTimestamp = now;
-            LayerLog("Message: %s", g_currentMessage.c_str());
+        RefreshRuntimePreset();
+        ShowReadyIfPossible();
+        if (g_presetResolved) {
+            std::string before = g_logReader->currentLogFile();
+            auto msgs = g_logReader->poll();
+            if (g_logReader->currentLogFile() != before)
+                LayerLog("Log switched: %s", g_logReader->currentLogFile().c_str());
+            if (!msgs.empty()) {
+                g_currentMessage = msgs.back().text;
+                g_messageTimestamp = now;
+                LayerLog("Message: %s", g_currentMessage.c_str());
+            }
         }
     }
 

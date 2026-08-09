@@ -65,7 +65,7 @@ games, and registers one canonical per-user manifest. Re-running setup is safe.
 ```powershell
 .\Setup-RandOverlay.ps1 -Action Status
 .\Setup-RandOverlay.ps1 -Action Repair
-.\Setup-RandOverlay.ps1 -Action Configure -Games RAC1,RAC2 -ActiveGame RAC2
+.\Setup-RandOverlay.ps1 -Action Configure -Games RAC1,RAC2
 .\Setup-RandOverlay.ps1 -Action CheckForUpdates
 .\Setup-RandOverlay.ps1 -Action Uninstall
 ```
@@ -94,7 +94,10 @@ preserves unrelated Vulkan layers.
 
 ## Configuration
 
-Reads the repo-root **`RandOverlay.ini`** (`ActivePreset` + `[Preset.<name>]`):
+Reads **`RandOverlay.ini`** (`EnabledPresets`, fallback `ActivePreset`, and `[Preset.<name>]`).
+The installed layer selects RAC1 from RPCS3 automatically. For PCSX2, it prefers the running
+game title and falls back to the Archipelago client title to distinguish RAC2 from RAC3. If the
+signals are missing or conflict, event rendering pauses rather than choosing the wrong preset.
 
 - `OverlayColor`, `BackgroundColor` — `#RRGGBB`
 - `VerticalPercent` — 0 (top) … 1 (bottom); overlay top edge, centered horizontally
@@ -102,14 +105,16 @@ Reads the repo-root **`RandOverlay.ini`** (`ActivePreset` + `[Preset.<name>]`):
 - `DisplayMs` — how long each message stays up
 - `FadeInMs` / `FadeOutMs` — fade durations (same lifecycle as the AHK/PS overlays)
 - `PollMs` — Archipelago log poll cadence
-- `EmulatorProcesses` — process gate for the active preset
+- `EnabledPresets` — installer-managed allow-list for automatic runtime selection
+- `ActivePreset` — backward-compatible fallback; not an initial-game prompt
+- `EmulatorProcesses` — process mapping for each detected preset
 - `FontFamily` / `FontFallback` — resolved via the Windows font registry and loaded
   into ImGui (HandelGothic BT → Bahnschrift → built-in)
 - `ClientComponent` — which Archipelago Launcher component the launch prompt starts
   for this preset (RAC1: `Ratchet & Clank Client`, RAC2/RAC3: the R&C game clients)
 
 If Archipelago is not running when the overlay activates, a one-time prompt offers:
-**Yes** = launch the active preset's client directly, **No** = open the Archipelago
+**Yes** = launch the automatically detected preset's client directly, **No** = open the Archipelago
 Launcher to pick any installed client (RAC1/RAC2/RAC3/etc.), **Cancel** = do nothing.
 Suppress with `RANDOVERLAY_NO_PROMPT=1`.
 

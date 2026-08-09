@@ -266,10 +266,17 @@ function Test-EmulatorsStopped {
     if ($running.Count -gt 0) { throw 'Close RPCS3 and PCSX2 before changing the Vulkan layer.' }
 }
 
-function Update-ActivePreset([string]$Path, [string]$Preset) {
+function Set-GeneralIniValue([string]$Content, [string]$Name, [string]$Value) {
+    if ($Content -match "(?m)^$([regex]::Escape($Name))=.*$") {
+        return $Content -replace "(?m)^$([regex]::Escape($Name))=.*$", "$Name=$Value"
+    }
+    $Content -replace '(?m)^\[General\]\s*', "[General]`r`n$Name=$Value`r`n"
+}
+
+function Update-PresetSelection([string]$Path, [string[]]$SelectedGames, [string]$FallbackPreset) {
     $content = Get-Content -LiteralPath $Path -Raw
-    if ($content -match '(?m)^ActivePreset=.*$') { $content = $content -replace '(?m)^ActivePreset=.*$', "ActivePreset=$Preset" }
-    else { $content = $content -replace '(?m)^\[General\]\s*', "[General]`r`nActivePreset=$Preset`r`n" }
+    $content = Set-GeneralIniValue $content 'EnabledPresets' (@($SelectedGames) -join ',')
+    $content = Set-GeneralIniValue $content 'ActivePreset' $FallbackPreset
     Set-Content -LiteralPath $Path -Value $content -Encoding ASCII
 }
 
@@ -349,7 +356,7 @@ function Complete-Install($Metadata, [string[]]$SelectedGames, [string]$Selected
     if (-not (Test-Path -LiteralPath $script:ConfigPath)) {
         Copy-Item -LiteralPath (Join-Path $payload 'RandOverlay.ini') -Destination $script:ConfigPath -Force
     }
-    Update-ActivePreset $script:ConfigPath $SelectedActive
+    Update-PresetSelection $script:ConfigPath $SelectedGames $SelectedActive
 
     if (Test-Path -LiteralPath $script:RollbackRoot) { Remove-ExactOwnedPath $InstallRoot $script:RollbackRoot }
     $oldMoved = $false
@@ -381,7 +388,7 @@ function Complete-Install($Metadata, [string[]]$SelectedGames, [string]$Selected
     }
     Write-JsonFile $script:StatePath $state
     Write-Ok "RandOverlay $($Metadata.version) installed for $($SelectedGames -join ', ')"
-    Write-Ok "Active game: $SelectedActive"
+    Write-Ok "Automatic preset detection enabled; fallback preset: $SelectedActive"
 }
 
 function Invoke-Install {
@@ -434,7 +441,7 @@ function Invoke-Status {
         Write-Host "Version: $($health.state.installedVersion)"
         Write-Host "State: $($health.state.status)"
         Write-Host "Games: $(@($health.state.enabledGames) -join ', ')"
-        Write-Host "Active: $($health.state.activeGame)"
+        Write-Host "Fallback preset: $($health.state.activeGame)"
         Write-Host "Location: $InstallRoot"
     }
     if ($health.healthy) { Write-Ok 'Installation is healthy.' }
@@ -463,7 +470,7 @@ function Invoke-Configure {
     if (-not $state) { throw 'No installation exists. Run Install first.' }
     $requestedGames = if ($Games) { $Games } else { @($state.enabledGames) }
     $selected = Normalize-Games $requestedGames
-    $selectedActive = if ($ActiveGame) { $ActiveGame } else { [string]$state.activeGame }
+    $selectedActive = if ($ActiveGame) { $ActiveGame } elseif ($selected -contains [string]$state.activeGame) { [string]$state.activeGame } else { $selected[0] }
     if ($selected -notcontains $selectedActive) { throw 'ActiveGame must be one of the selected Games.' }
     if (-not $SkipPrerequisiteChecks) {
         $results = Get-PrerequisiteStatus $selected
@@ -472,12 +479,12 @@ function Invoke-Configure {
             throw 'Selected games have missing prerequisites.'
         }
     }
-    Update-ActivePreset $script:ConfigPath $selectedActive
+    Update-PresetSelection $script:ConfigPath $selected $selectedActive
     $state.enabledGames = @($selected)
     $state.activeGame = $selectedActive
     $state.updatedAt = (Get-Date).ToUniversalTime().ToString('o')
     Write-JsonFile $script:StatePath $state
-    Write-Ok "Enabled games: $($selected -join ', '); active game: $selectedActive"
+    Write-Ok "Enabled games: $($selected -join ', '); automatic detection on; fallback preset: $selectedActive"
 }
 
 function Invoke-Uninstall {
@@ -602,10 +609,7 @@ function Invoke-Interactive {
     $state = Get-State
     if (-not $state -or $state.status -ne 'installed') {
         $script:Games = Read-GameSelection
-        if ($script:Games.Count -gt 1) {
-            $script:ActiveGame = (Read-Host "Initial active game [$($script:Games[0])]").Trim().ToUpperInvariant()
-            if (-not $script:ActiveGame) { $script:ActiveGame = $script:Games[0] }
-        } else { $script:ActiveGame = $script:Games[0] }
+        $script:ActiveGame = $script:Games[0] # fallback only; runtime detects the game
         Invoke-Install
         return
     }
@@ -615,8 +619,7 @@ function Invoke-Interactive {
         '2' { Invoke-Repair }
         '3' {
             $script:Games = Read-GameSelection
-            $script:ActiveGame = (Read-Host "Active game [$($script:Games[0])]").Trim().ToUpperInvariant()
-            if (-not $script:ActiveGame) { $script:ActiveGame = $script:Games[0] }
+            $script:ActiveGame = if ($script:Games -contains [string]$state.activeGame) { [string]$state.activeGame } else { $script:Games[0] }
             Invoke-Configure
         }
         '4' { Invoke-CheckForUpdates }

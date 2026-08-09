@@ -30,6 +30,27 @@ function Invoke-Setup([string]$Script, [string[]]$Arguments, [int]$ExpectedExit 
     $output
 }
 
+function Invoke-InteractiveSetup([string]$Script, [string[]]$Arguments, [string]$InputText) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell.exe'
+    $quotedArgs = @($Arguments | ForEach-Object { '"' + ([string]$_).Replace('"','\"') + '"' })
+    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $Script + '" ' + ($quotedArgs -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    [void]$process.Start()
+    $process.StandardInput.Write($InputText)
+    $process.StandardInput.Close()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    [pscustomobject]@{ ExitCode=$process.ExitCode; Output=($stdout + $stderr) }
+}
+
 function Get-RegistryNames {
     if (-not (Test-Path $RegistryPath)) { return @() }
     @((Get-ItemProperty $RegistryPath).PSObject.Properties |
@@ -86,6 +107,14 @@ try {
     [IO.File]::WriteAllText($fakePcsx2, '')
     [IO.File]::WriteAllText($fakeVulkan, '')
 
+    $interactiveRoot = Join-Path $RunRoot 'InteractiveLocalAppData\RandOverlay'
+    $interactive = Invoke-InteractiveSetup $setup @('-InstallRoot',$interactiveRoot,'-RegistryPath',$RegistryPath,'-SkipPrerequisiteChecks') "1,2,3`r`n"
+    Assert-True ($interactive.ExitCode -eq 0 -and $interactive.Output -notmatch 'Initial active game') 'multi-game Enter flow installs without an active-game prompt or blank validation failure'
+    $interactiveState = Get-Content -LiteralPath (Join-Path $interactiveRoot 'setup-state.json') -Raw | ConvertFrom-Json
+    Assert-True (@($interactiveState.enabledGames).Count -eq 3 -and $interactiveState.activeGame -eq 'RAC1') 'interactive multi-game install records all games with RAC1 fallback'
+    Assert-True ([bool](Select-String -LiteralPath (Join-Path $interactiveRoot 'RandOverlay.ini') -Pattern '^EnabledPresets=RAC1,RAC2,RAC3$')) 'interactive install writes the automatic-detection enabled set'
+    Invoke-Setup (Join-Path $interactiveRoot 'Setup-RandOverlay.ps1') @('-Action','Uninstall','-InstallRoot',$interactiveRoot,'-RegistryPath',$RegistryPath,'-NonInteractive') | Out-Null
+
     $preflightArgs = @('-Action','Preflight','-Games','RAC1','-ArchipelagoRoot',$fakeArch,'-RPCS3Path',$fakeRpcs3,'-VulkanLoaderPath',$fakeVulkan,'-InstallRoot',$InstallRoot,'-RegistryPath',$RegistryPath,'-Json')
     $preflightJson = Invoke-Setup $setup $preflightArgs
     $preflight = $preflightJson | ConvertFrom-Json
@@ -120,6 +149,7 @@ try {
     $state = Get-Content -LiteralPath (Join-Path $InstallRoot 'setup-state.json') -Raw | ConvertFrom-Json
     Assert-True (@($state.enabledGames).Count -eq 3 -and $state.activeGame -eq 'RAC3') 'multi-game selection and active preset persist'
     Assert-True ([bool](Select-String -LiteralPath (Join-Path $InstallRoot 'RandOverlay.ini') -Pattern '^ActivePreset=RAC3$')) 'configuration active preset updated'
+    Assert-True ([bool](Select-String -LiteralPath (Join-Path $InstallRoot 'RandOverlay.ini') -Pattern '^EnabledPresets=RAC1,RAC2,RAC3$')) 'configuration persists automatic-detection enabled presets'
 
     $status = Invoke-Setup (Join-Path $InstallRoot 'Setup-RandOverlay.ps1') @('-Action','Status','-InstallRoot',$InstallRoot,'-RegistryPath',$RegistryPath,'-Json') | ConvertFrom-Json
     Assert-True $status.healthy 'installed status is healthy'

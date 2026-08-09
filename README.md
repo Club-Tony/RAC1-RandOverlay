@@ -17,11 +17,11 @@ RPCS3 and PCSX2 window behavior can differ, especially in fullscreen and borderl
 ## Quick Start
 
 1. Start Archipelago Text Client or a game-specific Archipelago client.
-2. Edit `RandOverlay.ini` and set `ActivePreset=RAC1`, `RAC2`, or `RAC3`.
-3. Run one overlay version:
-   - AHK: run `RandOverlay.ahk` with AutoHotkey v1 installed.
-   - PowerShell/WPF: run `PS+WPF-Version/RandOverlay.bat`.
-4. Trigger or wait for an Archipelago event.
+2. Run one overlay version:
+   - AHK: set `ActivePreset=RAC1`, `RAC2`, or `RAC3` in `RandOverlay.ini`, then run `RandOverlay.ahk` with AutoHotkey v1 installed.
+   - PowerShell/WPF: set `ActivePreset` in `RandOverlay.ini`, then run `PS+WPF-Version/RandOverlay.bat`.
+   - Vulkan: select the games during one-click setup; the layer detects the running supported game and switches among the enabled presets automatically.
+3. Trigger or wait for an Archipelago event.
 
 If `RandOverlay.ini` is missing or has invalid values, both runtimes fall back to built-in RAC1-compatible defaults and show/log a short warning.
 
@@ -49,7 +49,9 @@ end users do not need build tools.
 Setup installs under `%LOCALAPPDATA%\RandOverlay`, supports Status, Repair, Configure,
 Check for updates, and Uninstall, and sends no telemetry. Missing dependencies get a
 confirmed allowlisted WinGet option where available or a clickable official link followed by
-Recheck/Save-and-exit.
+Recheck/Save-and-exit. Multi-game selections are stored as `EnabledPresets`; no initial active
+game choice is required. RPCS3 resolves RAC1 directly, while PCSX2 uses the running game or
+Archipelago client window title to distinguish RAC2 from RAC3 and pauses rather than guessing.
 
 Until trusted signing is active, Windows may show an Unknown Publisher or SmartScreen
 reputation warning. This can occur because the project is unsigned or has not established
@@ -61,7 +63,9 @@ See [Vulkan setup details](Vulkan-DLL-Version/README.md), [privacy](PRIVACY.md),
 
 ## Configuration
 
-`RandOverlay.ini` is shared by both runtime versions. The default is `ActivePreset=RAC1`.
+`RandOverlay.ini` is shared by all runtime versions. `ActivePreset=RAC1` remains the manual
+selection for AHK/PowerShell and the Vulkan fallback. Installed Vulkan configurations also use
+`EnabledPresets` as the runtime auto-detection allow-list.
 
 Each preset controls:
 
