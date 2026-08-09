@@ -12,6 +12,7 @@ Keep the plans separate. They share configuration and verification inputs, but t
 | --- | --- | --- | --- |
 | [Multi-game overlay roadmap](Completed/multi-game-overlay-roadmap.md) | RAC1/RAC2/RAC3 product scope, branch/repository naming, shared `RandOverlay.ini` presets, README framing, and AHK/PowerShell-WPF behavior | None; this is the shared product/configuration track | **Completed 2026-08-08** — owner-confirmed across RAC1/RAC2/RAC3; automated AHK/WPF regression passes |
 | [Vulkan layer overlay](vulkan-overlay-works-no-matter-what.md) | Vulkan implicit-layer architecture, in-frame ImGui rendering, exclusive-fullscreen behavior, build/install workflow, and Vulkan-specific safety | Multi-game process mappings, active preset, visual settings, and log-path contract | Automated suite passes, including Khronos validation and OBS coexistence; awaiting live RPCS3/RAC1 and PCSX2/RAC2 certification |
+| [Vulkan one-click distribution](Completed/vulkan-one-click-installer.md) | Precompiled ZIP/EXE release, per-user setup, dependency remediation, repair/update/uninstall, and signing eligibility | Passing Vulkan build and stable RAC1/RAC2/RAC3 preset contract | **Completed 2026-08-08** — local artifacts and full automated suite pass; signing remains an external service gate |
 
 ### Open handoffs
 
