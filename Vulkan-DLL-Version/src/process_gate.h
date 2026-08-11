@@ -56,6 +56,13 @@ inline bool isProcessEnabledForPresets(const std::string& exeLower,
     return false;
 }
 
+inline bool needsWindowTitleSignals(const std::string& exeLower,
+                                    const std::string& enabledPresets) {
+    return listContains("pcsx2-qt.exe,pcsx2.exe", exeLower) &&
+           listContains(enabledPresets, "RAC2") &&
+           listContains(enabledPresets, "RAC3");
+}
+
 inline int presetMatchesInTitles(const std::vector<std::string>& titles,
                                  bool rac2Enabled, bool rac3Enabled) {
     int matches = 0;

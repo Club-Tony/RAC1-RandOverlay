@@ -102,9 +102,11 @@ static BOOL CALLBACK CollectPresetWindowTitles(HWND hwnd, LPARAM value) {
 
 static bool RefreshRuntimePreset() {
     RuntimePresetSignals signals = { GetCurrentProcessId(), {}, {} };
-    EnumWindows(CollectPresetWindowTitles, reinterpret_cast<LPARAM>(&signals));
+    std::string processExe = rogate::currentProcessExeLower();
+    if (rogate::needsWindowTitleSignals(processExe, g_config.enabledPresets))
+        EnumWindows(CollectPresetWindowTitles, reinterpret_cast<LPARAM>(&signals));
     std::string detected = rogate::detectPreset(
-        rogate::currentProcessExeLower(), g_config.enabledPresets,
+        processExe, g_config.enabledPresets,
         signals.emulatorTitles, signals.clientTitles);
 
     if (detected.empty()) {

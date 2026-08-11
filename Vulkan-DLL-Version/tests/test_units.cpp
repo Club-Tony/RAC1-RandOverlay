@@ -35,6 +35,12 @@ int main(int argc, char** argv) {
           "enabled RAC1 permits RPCS3");
     CHECK(!rogate::isProcessEnabledForPresets("pcsx2-qt.exe", "RAC1"),
           "RAC1-only selection does not permit PCSX2");
+    CHECK(!rogate::needsWindowTitleSignals("rpcs3.exe", "RAC1,RAC2,RAC3"),
+          "RPCS3 preset resolution never waits on desktop window titles");
+    CHECK(!rogate::needsWindowTitleSignals("pcsx2-qt.exe", "RAC1,RAC2"),
+          "single enabled PCSX2 game never waits on desktop window titles");
+    CHECK(rogate::needsWindowTitleSignals("pcsx2.exe", "RAC1,RAC2,RAC3"),
+          "ambiguous PCSX2 selection requires window title signals");
 
     printf("[automatic preset detection]\n");
     const std::vector<std::string> noTitles;
