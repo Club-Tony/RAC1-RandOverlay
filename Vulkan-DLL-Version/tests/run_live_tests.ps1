@@ -40,6 +40,26 @@ function Test-RequiredPath([string]$Name, [string]$Path, [bool]$Required = $true
     if ($Required -and -not $exists) { $script:Failures.Add("preflight: missing $Name at $Path") | Out-Null }
 }
 
+function Get-RegisteredRandOverlayManifestPath {
+    $registry = Get-ItemProperty -Path "HKCU:\SOFTWARE\Khronos\Vulkan\ImplicitLayers" -ErrorAction SilentlyContinue
+    $registeredPaths = @($registry.PSObject.Properties | Where-Object { $_.Name -like "*.json" } | ForEach-Object { $_.Name })
+    foreach ($path in $registeredPaths) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        try {
+            $registeredManifest = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            if ($registeredManifest.layer.name -ne 'VK_LAYER_RANDOVERLAY_overlay') { continue }
+            $libraryPath = [string]$registeredManifest.layer.library_path
+            $libraryFullPath = if ([IO.Path]::IsPathRooted($libraryPath)) {
+                $libraryPath
+            } else {
+                Join-Path (Split-Path $path -Parent) $libraryPath
+            }
+            if (Test-Path -LiteralPath $libraryFullPath -PathType Leaf) { return $path }
+        } catch { }
+    }
+    return $null
+}
+
 function Invoke-Preflight {
     Test-RequiredPath "x64 g++" "C:\mingw64\bin\g++.exe"
     Test-RequiredPath "Vulkan headers" "C:\VulkanSDK\1.4.341.1\Include\vulkan\vulkan.h"
@@ -48,17 +68,7 @@ function Invoke-Preflight {
     Test-RequiredPath "layer manifest" (Join-Path $VulkanRoot "RandOverlay_layer.json")
     Test-RequiredPath "OBS Studio" "C:\Program Files\obs-studio\bin\64bit\obs64.exe" $false
 
-    $manifest = Join-Path $VulkanRoot "RandOverlay_layer.json"
-    $expectedHash = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash
-    $registry = Get-ItemProperty -Path "HKCU:\SOFTWARE\Khronos\Vulkan\ImplicitLayers" -ErrorAction SilentlyContinue
-    $registeredPaths = @($registry.PSObject.Properties | Where-Object { $_.Name -like "*.json" } | ForEach-Object { $_.Name })
-    $isRegistered = $false
-    foreach ($path in $registeredPaths) {
-        if ((Test-Path -LiteralPath $path) -and (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq $expectedHash) {
-            $isRegistered = $true
-            break
-        }
-    }
+    $isRegistered = [bool](Get-RegisteredRandOverlayManifestPath)
     Write-Host ("[{0}] RandOverlay implicit-layer registration" -f $(if ($isRegistered) { "OK" } else { "MISSING" }))
     if (-not $isRegistered) { $script:Failures.Add("preflight: RandOverlay layer is not registered for the current user") | Out-Null }
 
@@ -168,7 +178,9 @@ function Invoke-MockScenario {
     $scenarioRoot = Join-Path $RunRoot $Name
     New-Item -ItemType Directory -Path $scenarioRoot -Force | Out-Null
     $testData = New-TestConfig $Preset $scenarioRoot
-    $layerLog = Join-Path $BuildRoot "layer_debug.log"
+    $registeredManifestPath = Get-RegisteredRandOverlayManifestPath
+    if (-not $registeredManifestPath) { throw "registered RandOverlay manifest not found" }
+    $layerLog = Join-Path (Split-Path $registeredManifestPath -Parent) "layer_debug.log"
     Remove-Item -LiteralPath $layerLog -Force -ErrorAction SilentlyContinue
 
     $obsStarted = $false

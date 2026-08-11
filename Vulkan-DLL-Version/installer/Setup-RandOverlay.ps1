@@ -511,7 +511,9 @@ function Read-GameSelection {
     if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
         Write-Host 'Select games (comma-separated; default RAC1):'
         for ($i = 0; $i -lt $items.Count; $i++) { Write-Host "[$($i + 1)] $($items[$i].Game) - $($items[$i].Emulator)" }
-        $answer = (Read-Host 'Selection').Trim()
+        # Redirected Windows PowerShell input can prefix the first token with
+        # a UTF-8 BOM. Strip it so selection 1 is not silently discarded.
+        $answer = (Read-Host 'Selection').Trim() -replace '^[^0-9A-Za-z]+', ''
         if (-not $answer) { return @('RAC1') }
         $map = @{ '1'='RAC1'; '2'='RAC2'; '3'='RAC3'; 'RAC1'='RAC1'; 'RAC2'='RAC2'; 'RAC3'='RAC3' }
         return Normalize-Games @($answer -split ',' | ForEach-Object { $map[$_.Trim().ToUpperInvariant()] } | Where-Object { $_ } | Select-Object -Unique)
