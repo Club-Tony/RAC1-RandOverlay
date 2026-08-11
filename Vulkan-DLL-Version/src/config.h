@@ -30,7 +30,7 @@ struct RandOverlayConfig {
     float bgColor[3]          = {0.118f, 0.118f, 0.118f}; // #1E1E1E
     float bgAlpha             = 0.80f;                    // background panel opacity (parity: PS+WPF BgOpacity 0.80)
     float verticalPercent     = 0.17f;                    // 0=top .. 1=bottom
-    int   fontSize            = 40;                        // px (from WpfFontSize)
+    int   fontSize            = 48;                        // 1080p px baseline (VulkanFontSize)
     int   displayMs           = 5000;                     // message hold time
     int   pollMs              = 1500;                     // log poll cadence (parity: AHK/PS PollMs)
     int   fadeInMs            = 300;                      // fade-in duration (parity: FadeInMs)
@@ -168,7 +168,10 @@ inline void RandOverlayConfig::load(const std::string& presetOverride) {
     if (get(psec, "OverlayColor", tmp))                       parseHexColor(tmp, overlayColor);
     if (get(psec, "BackgroundColor", tmp))                    parseHexColor(tmp, bgColor);
     if (get(psec, "VerticalPercent", tmp))                    { try { verticalPercent = std::stof(tmp); } catch (...) {} }
-    if (get(psec, "WpfFontSize", tmp))                        { try { fontSize = std::stoi(tmp); } catch (...) {} }
+    // VulkanFontSize is a 1080p baseline. Preserved pre-scaling INIs do not
+    // contain this key, so they keep the Vulkan default instead of inheriting
+    // the independent WPF size.
+    if (get(psec, "VulkanFontSize", tmp))                       { try { fontSize = std::stoi(tmp); } catch (...) {} }
     if (get(psec, "FontFamily", tmp) && !tmp.empty())         fontFamily = tmp;
     if (get(psec, "FontFallback", tmp) && !tmp.empty())       fontFallback = tmp;
 

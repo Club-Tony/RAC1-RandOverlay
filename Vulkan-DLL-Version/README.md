@@ -101,14 +101,18 @@ signals are missing or conflict, event rendering pauses rather than choosing the
 
 - `OverlayColor`, `BackgroundColor` — `#RRGGBB`
 - `VerticalPercent` — 0 (top) … 1 (bottom); overlay top edge, centered horizontally
-- `WpfFontSize` — text size in px
+- `VulkanFontSize` — 1080p text-size baseline; the layer applies moderated
+  height-based scaling (36px at 720p, 48px at 1080p, 60px at 1440p, and
+  72px at 4K with the shipped 48px baseline)
 - `DisplayMs` — how long each message stays up
 - `FadeInMs` / `FadeOutMs` — fade durations (same lifecycle as the AHK/PS overlays)
 - `PollMs` — Archipelago log poll cadence
 - `EnabledPresets` — installer-managed allow-list for automatic runtime selection
 - `ActivePreset` — backward-compatible fallback; not an initial-game prompt
 - `EmulatorProcesses` — process mapping for each detected preset
-- `FontFamily` / `FontFallback` — resolved via the Windows font registry and loaded
+- `FontFamily` / `FontFallback` — resolved via the Windows font registry and loaded;
+  the primary font supplies letters while fallback digits keep values such as `RAC1`
+  visually distinct from `RACI`
   into ImGui (HandelGothic BT → Bahnschrift → built-in)
 - `ClientComponent` — which Archipelago Launcher component the launch prompt starts
   for this preset (RAC1: `Ratchet & Clank Client`, RAC2/RAC3: the R&C game clients)

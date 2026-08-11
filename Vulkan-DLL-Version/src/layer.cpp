@@ -34,6 +34,7 @@
 #include "process_gate.h"
 #include "font_resolver.h"
 #include "arch_client_check.h"
+#include "overlay_layout.h"
 
 // ── Debug logging ─────────────────────────────────────────────────────────────
 static FILE* g_log = nullptr;
@@ -69,6 +70,7 @@ static ULONGLONG g_messageTimestamp = 0;
 static ULONGLONG g_lastPollTick = 0;      // parity: poll the log at PollMs, not per frame
 static bool g_readyMessageShown = false;  // parity: one-time startup notification
 static bool g_presetResolved = false;
+static rolayout::Metrics g_layout = rolayout::metricsForHeight(1080.0f, 48.0f);
 
 struct RuntimePresetSignals {
     DWORD emulatorPid;
@@ -169,6 +171,8 @@ static std::vector<VkSemaphore>   g_overlaySems; // one per swapchain image
 static bool g_renderReady = false;
 static bool g_imguiReady  = false;
 static ULONGLONG g_lastPresentTick = 0;
+static ImFont* g_primaryFont = nullptr;
+static ImFont* g_digitFont = nullptr;
 
 static void ShowReadyIfPossible() {
     if (!g_renderReady || !g_presetResolved || g_readyMessageShown) return;
@@ -237,6 +241,8 @@ static void ShutdownImgui() {
     if (!g_imguiReady) return;
     ImGui_ImplVulkan_Shutdown();
     if (ImGui::GetCurrentContext()) ImGui::DestroyContext();
+    g_primaryFont = nullptr;
+    g_digitFont = nullptr;
     g_imguiReady = false;
 }
 
@@ -252,22 +258,33 @@ static bool InitImgui() {
     // Font parity with the AHK/PS runtimes: the configured FontFamily
     // (HandelGothic BT — the R&C-style font), then FontFallback (Bahnschrift),
     // then ImGui's built-in font as a last resort.
-    float fontPx = (float)(g_config.fontSize > 0 ? g_config.fontSize : 40);
+    // VulkanFontSize is the 1080p baseline. Rebuilding ImGui with each
+    // swapchain automatically tracks windowed/fullscreen resolution changes.
+    const float baseFontPx = (float)(g_config.fontSize > 0 ? g_config.fontSize : 48);
+    g_layout = rolayout::metricsForHeight((float)g_swapExtent.height, baseFontPx);
+    const float fontPx = g_layout.fontPx;
     ImFont* font = nullptr;
     std::string fontPath = rofont::resolveFamilyToFile(g_config.fontFamily);
+    const std::string digitFontPath = rofont::resolveFamilyToFile(g_config.fontFallback);
     if (fontPath.empty()) {
         LayerLog("Font '%s' not installed, trying fallback '%s'",
                  g_config.fontFamily.c_str(), g_config.fontFallback.c_str());
-        fontPath = rofont::resolveFamilyToFile(g_config.fontFallback);
+        fontPath = digitFontPath;
     }
-    if (!fontPath.empty())
-        font = io.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontPx);
+
+    if (!fontPath.empty()) font = io.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontPx);
+    g_primaryFont = font;
+    if (font && !digitFontPath.empty() &&
+        rofont::normalize(fontPath) != rofont::normalize(digitFontPath)) {
+        g_digitFont = io.Fonts->AddFontFromFileTTF(digitFontPath.c_str(), fontPx);
+        if (g_digitFont) LayerLog("Clear digit font loaded: %s", digitFontPath.c_str());
+    }
     if (font) {
         LayerLog("Font loaded: %s (%.0fpx)", fontPath.c_str(), fontPx);
     } else {
         ImFontConfig fc;
         fc.SizePixels = fontPx;
-        io.Fonts->AddFontDefault(&fc);
+        g_primaryFont = io.Fonts->AddFontDefault(&fc);
         LayerLog("Using ImGui default font (%.0fpx)", fontPx);
     }
 
@@ -300,7 +317,8 @@ static bool InitImgui() {
         return false;
     }
     g_imguiReady = true;
-    LayerLog("ImGui initialized (font=%dpx, images=%u)", (int)fontPx, imageCount);
+    LayerLog("ImGui initialized (extent=%ux%u, scale=%.2f, font=%.0fpx, images=%u)",
+             g_swapExtent.width, g_swapExtent.height, g_layout.scale, fontPx, imageCount);
     return true;
 }
 
@@ -443,6 +461,59 @@ static bool SetupRender(VkDevice device) {
 // ── Build + record the overlay for one swapchain image ────────────────────────
 // `alpha` is the fade multiplier (0..1) from MessageAlpha — applied to both the
 // panel background and the text, mirroring the AHK whole-window alpha fade.
+static void DrawMixedFontText(const std::string& text, float maxTextWidth) {
+    if (!g_primaryFont || !g_digitFont) {
+        if (g_primaryFont) ImGui::PushFont(g_primaryFont, g_layout.fontPx);
+        ImGui::TextUnformatted(text.c_str());
+        if (g_primaryFont) ImGui::PopFont();
+        return;
+    }
+
+    struct Run { const char* begin; const char* end; ImFont* font; float width; };
+    std::vector<Run> runs;
+    const char* begin = text.c_str();
+    const char* end = begin + text.size();
+    const char* runStart = begin;
+    bool runIsDigit = begin < end && *begin >= '0' && *begin <= '9';
+    float totalWidth = 0.0f;
+    for (const char* p = begin; p <= end; ++p) {
+        const bool atEnd = p == end;
+        const bool isDigit = !atEnd && *p >= '0' && *p <= '9';
+        if (atEnd || isDigit != runIsDigit) {
+            ImFont* runFont = runIsDigit ? g_digitFont : g_primaryFont;
+            float width = runFont->CalcTextSizeA(
+                g_layout.fontPx, FLT_MAX, 0.0f, runStart, p).x;
+            runs.push_back({runStart, p, runFont, width});
+            totalWidth += width;
+            runStart = p;
+            runIsDigit = isDigit;
+        }
+    }
+
+    if (totalWidth > maxTextWidth) {
+        // Preserve wrapping for unusually long messages while keeping every
+        // digit unambiguous.
+        ImGui::PushFont(g_digitFont, g_layout.fontPx);
+        ImGui::TextUnformatted(text.c_str());
+        ImGui::PopFont();
+        return;
+    }
+
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    ImVec2 cursor = start;
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImU32 color = ImGui::GetColorU32(ImGuiCol_Text);
+    float lineHeight = 0.0f;
+    for (const Run& run : runs) {
+        drawList->AddText(run.font, g_layout.fontPx, cursor, color, run.begin, run.end);
+        const float height = run.font->CalcTextSizeA(
+            g_layout.fontPx, FLT_MAX, 0.0f, run.begin, run.end).y;
+        if (height > lineHeight) lineHeight = height;
+        cursor.x += run.width;
+    }
+    ImGui::Dummy(ImVec2(totalWidth, lineHeight));
+}
+
 static void DrawOverlay(VkCommandBuffer cmd, float alpha) {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)g_swapExtent.width, (float)g_swapExtent.height);
@@ -471,7 +542,9 @@ static void DrawOverlay(VkCommandBuffer cmd, float alpha) {
     float maxW = io.DisplaySize.x * 0.92f;
     ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(maxW, FLT_MAX));
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 8.0f)); // AHK Gui Margin 12,8
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                        ImVec2(g_layout.paddingX, g_layout.paddingY));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, g_layout.rounding);
     ImGui::PushStyleColor(ImGuiCol_WindowBg,
         ImVec4(g_config.bgColor[0], g_config.bgColor[1], g_config.bgColor[2], g_config.bgAlpha * alpha));
     ImGui::PushStyleColor(ImGuiCol_Text,
@@ -479,13 +552,13 @@ static void DrawOverlay(VkCommandBuffer cmd, float alpha) {
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
 
     ImGui::Begin("##randoverlay", nullptr, flags);
-    ImGui::PushTextWrapPos(maxW - 24.0f); // wrap inside the clamped width
-    ImGui::TextUnformatted(g_currentMessage.c_str());
+    ImGui::PushTextWrapPos(maxW - (g_layout.paddingX * 2.0f));
+    DrawMixedFontText(g_currentMessage, maxW - (g_layout.paddingX * 2.0f));
     ImGui::PopTextWrapPos();
     ImGui::End();
 
     ImGui::PopStyleColor(3);
-    ImGui::PopStyleVar();
+    ImGui::PopStyleVar(2);
 
     ImGui::Render();
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);

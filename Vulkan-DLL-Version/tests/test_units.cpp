@@ -14,6 +14,7 @@
 #include "log_reader.h"
 #include "font_resolver.h"
 #include "arch_client_check.h"
+#include "overlay_layout.h"
 
 static int g_pass = 0, g_fail = 0;
 #define CHECK(cond, msg) do { if (cond) { g_pass++; printf("  [PASS] %s\n", msg); } \
@@ -75,7 +76,7 @@ int main(int argc, char** argv) {
     CHECK(cfg.pollMs == 1500,                  "PollMs = 1500 (parity)");
     CHECK(cfg.fadeInMs == 300,                 "FadeInMs = 300 (parity)");
     CHECK(cfg.fadeOutMs == 500,                "FadeOutMs = 500 (parity)");
-    CHECK(cfg.fontSize == 43,                  "WpfFontSize = 43");
+    CHECK(cfg.fontSize == 48,                  "VulkanFontSize = 48");
     CHECK(cfg.emulatorProcs.find("rpcs3.exe") != std::string::npos, "RAC1 EmulatorProcesses has rpcs3.exe");
     CHECK(cfg.launcherExe.find("ArchipelagoLauncher.exe") != std::string::npos, "LauncherExe read");
     CHECK(cfg.fontFamily == "HandelGothic BT",  "FontFamily = HandelGothic BT");
@@ -83,6 +84,25 @@ int main(int argc, char** argv) {
     CHECK(cfg.clientComponent == "Ratchet & Clank Client",
           "RAC1 ClientComponent = Ratchet & Clank Client");
     CHECK(cfg.enabledPresets == "RAC1", "legacy INI falls back to ActivePreset as enabled set");
+
+    // Existing installations preserve their INI during upgrades. Before
+    // VulkanFontSize existed they only had WpfFontSize, which must not lower
+    // the new Vulkan baseline.
+    {
+        char tmpP[MAX_PATH]; GetTempPathA(MAX_PATH, tmpP);
+        std::string legacy = std::string(tmpP) + "randoverlay_legacy_font.ini";
+        FILE* f = fopen(legacy.c_str(), "w");
+        if (f) {
+            fprintf(f, "[General]\nActivePreset=RAC1\n[Preset.RAC1]\nWpfFontSize=43\n");
+            fclose(f);
+        }
+        SetEnvironmentVariableA("RANDOVERLAY_INI", legacy.c_str());
+        RandOverlayConfig legacyCfg; legacyCfg.load();
+        CHECK(legacyCfg.fontSize == 48,
+              "legacy WpfFontSize does not override Vulkan 48px baseline");
+        DeleteFileA(legacy.c_str());
+        if (argc > 1) SetEnvironmentVariableA("RANDOVERLAY_INI", argv[1]);
+    }
 
     // Preset-derived ClientComponent default (RAC3 preset, no explicit key)
     {
@@ -109,6 +129,21 @@ int main(int argc, char** argv) {
     { float c[3] = {9,9,9}; CHECK(!rocfg_detail::parseHexColor("#ZZZZZZ", c), "malformed hex rejected"); }
     { float c[3] = {0,0,0}; CHECK(rocfg_detail::parseHexColor("#FF0000", c) && approx(c[0],1.0f) &&
                                   approx(c[1],0.0f) && approx(c[2],0.0f), "#FF0000 -> (1,0,0)"); }
+
+    // Resolution-aware Vulkan layout: moderated scaling selected for parity
+    // across windowed, 1440p, and 4K output sizes.
+    printf("[overlay_layout]\n");
+    CHECK(approx(rolayout::metricsForHeight(720.0f, 48.0f).fontPx, 36.0f),
+          "720p uses 36px font");
+    CHECK(approx(rolayout::metricsForHeight(1080.0f, 48.0f).fontPx, 48.0f),
+          "1080p uses 48px font");
+    CHECK(approx(rolayout::metricsForHeight(1440.0f, 48.0f).fontPx, 60.0f),
+          "1440p uses 60px font");
+    CHECK(approx(rolayout::metricsForHeight(2160.0f, 48.0f).fontPx, 72.0f),
+          "4K uses 72px font");
+    CHECK(approx(rolayout::metricsForHeight(1080.0f, 48.0f).paddingX, 12.0f) &&
+          approx(rolayout::metricsForHeight(2160.0f, 48.0f).paddingX, 18.0f),
+          "panel spacing scales with resolution");
 
     // ── Archipelago log parsing ───────────────────────────────────────────
     printf("[log_reader]\n");

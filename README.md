@@ -75,7 +75,7 @@ Each preset controls:
 - `BackgroundColor`
 - `VerticalPercent`
 - `FontFamily` and `FontFallback`
-- `AhkFontSize` and `WpfFontSize`
+- `AhkFontSize`, `WpfFontSize`, and the resolution-scaled `VulkanFontSize`
 
 Colors use RGB hex values such as `#80A0D0`. AHK converts those internally for the Win32 text-color APIs.
 
