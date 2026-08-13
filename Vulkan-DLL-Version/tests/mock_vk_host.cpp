@@ -22,6 +22,9 @@
  *                           pixel coverage — the headless equivalent of the
  *                           Windows screenshot assertion
  *   MOCK_READBACK_PPM=<p>   also dump that frame as a binary PPM
+ *   MOCK_RECREATE=<n>       tear down and rebuild the swapchain n times during
+ *                           the run, exercising the layer's per-swapchain
+ *                           semaphore and command-buffer lifecycle
  *
  * Auto-exits after MOCK_SECONDS or on window close.
  */
@@ -430,6 +433,47 @@ int main() {
     cbai.commandPool = pool; cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cbai.commandBufferCount = scImgCount;
     VK_CHECK(vkAllocateCommandBuffers(device, &cbai, cmds.data()));
 
+    // Tear down and rebuild everything that hangs off the swapchain. The layer
+    // allocates a semaphore and a command buffer per swapchain image, so this
+    // is what exercises its cleanup/re-init path — the case flagged as
+    // untested in Plans/handoffs/. Run under validation to catch leaks or
+    // double-frees.
+    auto recreateSwapchain = [&]() {
+        vkDeviceWaitIdle(device);
+        for (auto fb : fbs) vkDestroyFramebuffer(device, fb, nullptr);
+        for (auto v : views) vkDestroyImageView(device, v, nullptr);
+
+        VkSwapchainKHR old = swap;
+        scci.oldSwapchain = old;
+        VK_CHECK(vkCreateSwapchainKHR(device, &scci, nullptr, &swap));
+        vkDestroySwapchainKHR(device, old, nullptr);
+        scci.oldSwapchain = VK_NULL_HANDLE;
+
+        uint32_t n = 0;
+        vkGetSwapchainImagesKHR(device, swap, &n, nullptr);
+        images.resize(n);
+        vkGetSwapchainImagesKHR(device, swap, &n, images.data());
+        views.resize(n);
+        fbs.resize(n);
+        for (uint32_t i = 0; i < n; i++) {
+            VkImageViewCreateInfo ivci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            ivci.image = images[i]; ivci.viewType = VK_IMAGE_VIEW_TYPE_2D; ivci.format = sf.format;
+            ivci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            VK_CHECK(vkCreateImageView(device, &ivci, nullptr, &views[i]));
+
+            VkFramebufferCreateInfo fbci = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+            fbci.renderPass = rp; fbci.attachmentCount = 1; fbci.pAttachments = &views[i];
+            fbci.width = g_extent.width; fbci.height = g_extent.height; fbci.layers = 1;
+            VK_CHECK(vkCreateFramebuffer(device, &fbci, nullptr, &fbs[i]));
+        }
+        printf("[mock] swapchain recreated (%u images)\n", n);
+        fflush(stdout);
+    };
+
+    const char* recreateEnv = getenv("MOCK_RECREATE");
+    const int recreateTarget = recreateEnv ? atoi(recreateEnv) : 0;
+    int recreateDone = 0;
+
     Readback rb;
     const bool readbackOn = wantReadback && canReadback &&
         InitReadback(rb, phys, device, pool, (VkDeviceSize)g_extent.width * g_extent.height * 4);
@@ -496,6 +540,13 @@ int main() {
         if (pr == VK_ERROR_OUT_OF_DATE_KHR) break;
 
         vkQueueWaitIdle(queue);
+
+        // Spread the rebuilds across the run so the layer re-initialises while
+        // a message is mid-fade, not just on an idle frame.
+        if (recreateDone < recreateTarget && frame > 0 && frame % 120 == 0) {
+            recreateSwapchain();
+            recreateDone++;
+        }
 
         // Measure the overlay on the LAST frame only, once the layer has had
         // time to poll the log and fade its message in.

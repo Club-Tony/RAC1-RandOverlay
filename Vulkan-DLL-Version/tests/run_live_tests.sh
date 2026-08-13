@@ -74,7 +74,9 @@ cat > "$INI" <<EOF
 ActivePreset=RAC1
 EnabledPresets=RAC1
 LogDirLinux=$SCRATCH/logs
-DisplayMs=5000
+; Far longer than any run, so the readback assertion measures whether the
+; overlay DREW rather than racing its fade-out. Shipping default is 5000.
+DisplayMs=60000
 PollMs=500
 FadeInMs=100
 FadeOutMs=200
@@ -110,7 +112,8 @@ run_host() {
     rm -f "$LAYER_LOG" "$SCRATCH/frame.ppm"
 
     RANDOVERLAY_INI="$INI" RANDOVERLAY_NO_PROMPT=1 \
-    MOCK_SECONDS=7 MOCK_STATIC_FRAME=1 MOCK_READBACK=1 \
+    MOCK_SECONDS=8 MOCK_STATIC_FRAME=1 MOCK_READBACK=1 \
+    MOCK_RECREATE="${MOCK_EXTRA_RECREATE:-0}" \
     MOCK_READBACK_PPM="$SCRATCH/frame.ppm" \
     "$@" "$MOCK" > "$SCRATCH/mock_$kind.txt" 2>&1 &
     local pid=$!
@@ -131,7 +134,11 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "visual" ]; then
     echo
     echo "[visual]"
 
-    run_host control
+    # Control: identical run with the layer switched off via its own kill
+    # switch. This is what makes the pixel count meaningful — it shows the
+    # overlay band is empty without the layer, so a non-zero count in the event
+    # run can only have come from the layer drawing into the frame.
+    run_host control env DISABLE_RANDOVERLAY=1
     ctrl=$(band_differing "$SCRATCH/mock_control.txt")
     ctrl=${ctrl:-unknown}
 
@@ -161,8 +168,11 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "visual" ]; then
 
     note "overlay-band differing pixels — control=$ctrl event=$evt"
     if [ "$evt" != "unknown" ] && [ "$ctrl" != "unknown" ]; then
-        # The control run still shows the one-time "ready" notice, so require a
-        # clear increase rather than control being empty.
+        if [ "$ctrl" -eq 0 ]; then
+            ok "overlay band is empty with the layer disabled (clean control)"
+        else
+            bad "control frame is not clean (differing=$ctrl) — the pixel test cannot discriminate"
+        fi
         if [ "$evt" -gt 2000 ]; then
             ok "overlay pixels present in the event frame"
         else
@@ -205,6 +215,45 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "validation" ]; then
             bad "$errs validation error line(s)"
             grep -E 'Validation Error|VUID-' "$SCRATCH/mock_event.txt" | head -10
         fi
+    fi
+fi
+
+# ── Swapchain rebuild: the layer's per-swapchain lifecycle ───────────────────
+# The layer allocates a semaphore and a command buffer per swapchain image.
+# Plans/handoffs/ flags the teardown/re-init path as untested, and Mesa
+# recreates swapchains differently from the Windows drivers it was written
+# against, so exercise it repeatedly with validation watching for leaks.
+if [ "$MODE" = "all" ] || [ "$MODE" = "recreate" ]; then
+    echo
+    echo "[swapchain recreation]"
+    MOCK_EXTRA_RECREATE=4 run_host event env \
+        VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
+        VK_LAYER_SETTINGS_PATH="$SETTINGS"
+
+    got=$(grep -c 'swapchain recreated' "$SCRATCH/mock_event.txt")
+    if [ "${got:-0}" -eq 4 ]; then
+        ok "swapchain rebuilt 4 times"
+    else
+        bad "expected 4 swapchain rebuilds, saw ${got:-0}"
+    fi
+
+    seen=$(grep -c 'vkCreateSwapchainKHR' "$LAYER_LOG" 2>/dev/null)
+    if [ "${seen:-0}" -ge 5 ]; then
+        ok "layer re-initialised on every rebuild ($seen creations)"
+    else
+        bad "layer only saw ${seen:-0} swapchain creations, expected 5"
+    fi
+
+    if grep -q 'Khronos Validation Layer Active' "$SCRATCH/mock_event.txt"; then
+        errs=$(grep -cE 'Validation Error|VUID-' "$SCRATCH/mock_event.txt")
+        if [ "${errs:-0}" -eq 0 ]; then
+            ok "no validation errors across repeated swapchain rebuilds"
+        else
+            bad "$errs validation error line(s) during rebuild"
+            grep -E 'Validation Error|VUID-' "$SCRATCH/mock_event.txt" | head -10
+        fi
+    else
+        bad "validation layer did not load — rebuild result proves nothing"
     fi
 fi
 
