@@ -1,1 +1,6 @@
 Vulkan-DLL-Version/** linguist-vendored
+
+# Shell scripts must stay LF. This repo is developed on Windows with
+# core.autocrlf=true, which would otherwise check them out as CRLF and make the
+# shebang fail with "bad interpreter: /usr/bin/env bash^M" under WSL or Linux.
+*.sh text eol=lf
