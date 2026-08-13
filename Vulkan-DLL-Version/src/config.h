@@ -7,21 +7,38 @@
  * no third-party deps. Falls back to RAC1 defaults if the ini is missing or a
  * value is malformed — never throws out to the caller.
  */
-#include <windows.h>
+#include "platform.h"
 #include <string>
 #include <map>
 #include <fstream>
 #include <algorithm>
 #include <cctype>
 
+// Font defaults differ by platform: the R&C-style families the AHK and PS+WPF
+// runtimes rely on are Windows-installed and simply do not exist on Linux, so
+// picking them there would silently drop every user to ImGui's built-in bitmap
+// font. Ship families that are actually present instead, and let anyone with
+// the real fonts point at them with FontFile= or FontFamily=.
+#ifdef _WIN32
+  #define RANDOVERLAY_DEFAULT_FONT          "HandelGothic BT"  // parity: AHK/PS
+  #define RANDOVERLAY_DEFAULT_FONT_FALLBACK "Bahnschrift"      // ships with Win10/11
+#else
+  #define RANDOVERLAY_DEFAULT_FONT          "DejaVu Sans"      // near-universal on Linux
+  #define RANDOVERLAY_DEFAULT_FONT_FALLBACK "Liberation Sans"
+#endif
+
 struct RandOverlayConfig {
     std::string activePreset  = "RAC1";
     std::string enabledPresets = "RAC1";
-    std::string logDir        = "C:\\ProgramData\\Archipelago\\logs";
-    std::string launcherExe   = "C:\\ProgramData\\Archipelago\\ArchipelagoLauncher.exe";
+    std::string logDir        = roplat::defaultArchipelagoLogDir();
+    std::string launcherExe   = roplat::defaultArchipelagoLauncher();
     std::string emulatorProcs = "rpcs3.exe";
-    std::string fontFamily    = "HandelGothic BT";   // R&C-style font (parity: AHK/PS)
-    std::string fontFallback  = "Bahnschrift";       // ships with Win10/11
+    std::string fontFamily    = RANDOVERLAY_DEFAULT_FONT;
+    std::string fontFallback  = RANDOVERLAY_DEFAULT_FONT_FALLBACK;
+    // Absolute path to a .ttf/.otf, bypassing family-name resolution entirely.
+    // The escape hatch for Linux, where there is no font registry to search and
+    // fontconfig will happily substitute something unintended.
+    std::string fontFile;
     // Archipelago Launcher component to start for this preset (launcher arg).
     // Defaults are derived from ActivePreset in load(); override per preset
     // with ClientComponent= in RandOverlay.ini.
@@ -68,40 +85,30 @@ inline bool parseHexColor(const std::string& in, float out[3]) {
     return true;
 }
 
-// Directory of the module that this code is compiled into (the layer/overlay DLL).
-inline std::string moduleDir() {
-    HMODULE hm = nullptr;
-    static int marker = 0;
-    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       (LPCSTR)&marker, &hm);
-    char path[MAX_PATH] = {0};
-    GetModuleFileNameA(hm, path, MAX_PATH);
-    std::string p(path);
-    size_t slash = p.find_last_of("\\/");
-    return (slash == std::string::npos) ? std::string() : p.substr(0, slash);
+// True for "C:\...", "\\server\share", or anything containing a backslash.
+// Used to reject Windows paths carried in the shared ini when running on Linux.
+inline bool looksLikeWindowsPath(const std::string& p) {
+    if (p.size() >= 2 && std::isalpha((unsigned char)p[0]) && p[1] == ':') return true;
+    return p.find('\\') != std::string::npos;
 }
 
 inline std::string resolveIniPath() {
     // 1) explicit override
-    char env[MAX_PATH] = {0};
-    if (GetEnvironmentVariableA("RANDOVERLAY_INI", env, MAX_PATH) > 0 &&
-        GetFileAttributesA(env) != INVALID_FILE_ATTRIBUTES) {
-        return std::string(env);
-    }
-    // 2) walk up from the DLL directory. Built DLL normally lives in
-    //    <repo>\Vulkan-DLL-Version\build\  -> ini is at <repo>\RandOverlay.ini
-    std::string dir = moduleDir();
-    const char* rels[] = { "\\..\\..\\RandOverlay.ini",
-                           "\\..\\RandOverlay.ini",
-                           "\\RandOverlay.ini" };
+    std::string env;
+    if (roplat::getEnv("RANDOVERLAY_INI", env) && roplat::fileExists(env))
+        return env;
+
+    // 2) walk up from the shared-library directory. The built layer normally
+    //    lives in <repo>/Vulkan-DLL-Version/build/ -> ini is at
+    //    <repo>/RandOverlay.ini. Forward slashes are accepted on both platforms.
+    std::string dir = roplat::moduleDir();
+    if (dir.empty()) return "";
+    const char* rels[] = { "../../RandOverlay.ini",
+                           "../RandOverlay.ini",
+                           "RandOverlay.ini" };
     for (const char* rel : rels) {
-        std::string cand = dir + rel;
-        char full[MAX_PATH] = {0};
-        if (GetFullPathNameA(cand.c_str(), MAX_PATH, full, nullptr) &&
-            GetFileAttributesA(full) != INVALID_FILE_ATTRIBUTES) {
-            return std::string(full);
-        }
+        std::string cand = roplat::absPath(roplat::joinPath(dir, rel));
+        if (roplat::fileExists(cand)) return cand;
     }
     return "";
 }
@@ -142,8 +149,23 @@ inline void RandOverlayConfig::load(const std::string& presetOverride) {
     if (get("General", "EnabledPresets", tmp) && !tmp.empty()) enabledPresets = tmp;
     else enabledPresets = activePreset; // compatibility with pre-auto-detection INIs
     if (!presetOverride.empty()) activePreset = presetOverride;
+    // Paths are the one setting a shared ini genuinely cannot share. Adopting
+    // the Windows LogDir on Linux would leave the overlay tailing a path that
+    // cannot exist, so it would start cleanly and then silently never fire.
+    // A non-Windows-looking LogDir is still honoured, so a Linux-only install
+    // can just set LogDir directly; LogDirLinux always wins where present.
+#ifdef _WIN32
     if (get("General", "LogDir", tmp) && !tmp.empty())        logDir = tmp;
     if (get("General", "LauncherExe", tmp) && !tmp.empty())   launcherExe = tmp;
+    if (get("General", "LogDirWindows", tmp) && !tmp.empty()) logDir = tmp;
+#else
+    if (get("General", "LogDir", tmp) && !tmp.empty() && !looksLikeWindowsPath(tmp))
+        logDir = tmp;
+    if (get("General", "LauncherExe", tmp) && !tmp.empty() && !looksLikeWindowsPath(tmp))
+        launcherExe = tmp;
+    if (get("General", "LogDirLinux", tmp) && !tmp.empty())      logDir = tmp;
+    if (get("General", "LauncherExeLinux", tmp) && !tmp.empty()) launcherExe = tmp;
+#endif
     if (get("General", "DisplayMs", tmp))                     { try { displayMs = std::stoi(tmp); } catch (...) {} }
     if (get("General", "PollMs", tmp))                        { try { pollMs    = std::stoi(tmp); } catch (...) {} }
     if (get("General", "FadeInMs", tmp))                      { try { fadeInMs  = std::stoi(tmp); } catch (...) {} }
@@ -174,6 +196,16 @@ inline void RandOverlayConfig::load(const std::string& presetOverride) {
     if (get(psec, "VulkanFontSize", tmp))                       { try { fontSize = std::stoi(tmp); } catch (...) {} }
     if (get(psec, "FontFamily", tmp) && !tmp.empty())         fontFamily = tmp;
     if (get(psec, "FontFallback", tmp) && !tmp.empty())       fontFallback = tmp;
+    // Per-platform font overrides. FontFileLinux/FontFileWindows let one shared
+    // ini serve both builds; plain FontFile applies to whichever is reading.
+    if (get(psec, "FontFile", tmp) && !tmp.empty())           fontFile = tmp;
+#ifdef _WIN32
+    if (get(psec, "FontFileWindows", tmp) && !tmp.empty())    fontFile = tmp;
+#else
+    if (get(psec, "FontFileLinux", tmp) && !tmp.empty())      fontFile = tmp;
+    if (get(psec, "FontFamilyLinux", tmp) && !tmp.empty())    fontFamily = tmp;
+    if (get(psec, "FontFallbackLinux", tmp) && !tmp.empty())  fontFallback = tmp;
+#endif
 
     loaded = true;
 }

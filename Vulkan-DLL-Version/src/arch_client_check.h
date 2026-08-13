@@ -6,33 +6,27 @@
  * an Archipelago client writing logs, so when the overlay activates and no
  * Archipelago process is found, offer to start the launcher (Yes/No prompt).
  *
- * The prompt runs on its own thread so the game's render thread is never
- * blocked. Suppress entirely with RANDOVERLAY_NO_PROMPT=1 (used by tests).
+ * The prompt is Windows-only. On Linux the caller just logs the condition —
+ * see promptIfNotRunning() for why. Suppress the prompt entirely with
+ * RANDOVERLAY_NO_PROMPT=1 (used by tests).
  */
-#include <windows.h>
-#include <tlhelp32.h>
-#include <shellapi.h>
+#include "platform.h"
 #include <string>
+
+#ifdef _WIN32
+  #include <windows.h>
+  #include <shellapi.h>
+#endif
 
 namespace roarch {
 
 // True if any process image name starts with "Archipelago" (launcher, text
-// client, game clients — all ship as Archipelago*.exe).
+// client, game clients — all ship as Archipelago*).
 inline bool isArchipelagoRunning() {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return false;
-
-    bool found = false;
-    PROCESSENTRY32 pe;
-    pe.dwSize = sizeof(pe);
-    if (Process32First(snap, &pe)) {
-        do {
-            if (_strnicmp(pe.szExeFile, "Archipelago", 11) == 0) { found = true; break; }
-        } while (Process32Next(snap, &pe));
-    }
-    CloseHandle(snap);
-    return found;
+    return roplat::processRunningWithPrefix("Archipelago");
 }
+
+#ifdef _WIN32
 
 struct PromptContext {
     std::string launcherExe;
@@ -43,7 +37,7 @@ struct PromptContext {
 inline DWORD WINAPI promptThread(LPVOID param) {
     PromptContext* ctx = (PromptContext*)param;
     // Three-way choice. Game clients are apworld-provided launcher components,
-    // so the DLL cannot reliably enumerate what's installed — the launcher UI
+    // so the layer cannot reliably enumerate what's installed — the launcher UI
     // is the authoritative picker. Yes = the active preset's client directly.
     std::string msg =
         "Archipelago is not running.\n\n"
@@ -68,21 +62,30 @@ inline DWORD WINAPI promptThread(LPVOID param) {
     return 0;
 }
 
-// Fire-and-forget: if Archipelago isn't running, ask (once) on a background
-// thread which client to start. Never blocks the caller.
-inline void promptIfNotRunning(const std::string& launcherExe,
+#endif // _WIN32
+
+// Returns true if Archipelago is already running.
+//
+// When it is not, Windows offers the launcher prompt on a background thread so
+// the game's render thread is never blocked. Linux deliberately does not
+// prompt: a modal dialog spawned from inside vkQueuePresentKHR has no reliable
+// always-on-top under a Wayland compositor, and can wedge a fullscreen game
+// behind an unreachable window. The caller logs the condition instead.
+inline bool promptIfNotRunning(const std::string& launcherExe,
                                const std::string& presetName,
                                const std::string& clientComponent) {
-    char env[8] = {0};
-    if (GetEnvironmentVariableA("RANDOVERLAY_NO_PROMPT", env, sizeof(env)) > 0 &&
-        env[0] == '1')
-        return;
-    if (isArchipelagoRunning()) return;
+    if (isArchipelagoRunning()) return true;
+    if (roplat::envEquals("RANDOVERLAY_NO_PROMPT", "1")) return false;
 
+#ifdef _WIN32
     PromptContext* ctx = new PromptContext{launcherExe, presetName, clientComponent};
     HANDLE t = CreateThread(nullptr, 0, promptThread, ctx, 0, nullptr);
     if (t) CloseHandle(t);
     else   delete ctx;
+#else
+    (void)launcherExe; (void)presetName; (void)clientComponent;
+#endif
+    return false;
 }
 
 } // namespace roarch

@@ -6,7 +6,7 @@
  * system. This gate lets the layer self-disable in any process that is not one
  * of the supported emulators, so leaving the layer registered is safe.
  */
-#include <windows.h>
+#include "platform.h"
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -14,23 +14,25 @@
 
 namespace rogate {
 
+// Drop a trailing ".exe" so the Windows process names carried in the ini and in
+// the hardcoded lists below also match their Linux counterparts, where the same
+// binaries are simply "rpcs3" / "pcsx2-qt". Applied to both sides of every
+// comparison, so one set of literals serves both platforms.
+inline std::string stripExeSuffix(const std::string& s) {
+    const std::string ext = ".exe";
+    if (s.size() > ext.size() &&
+        s.compare(s.size() - ext.size(), ext.size(), ext) == 0)
+        return s.substr(0, s.size() - ext.size());
+    return s;
+}
+
 inline std::string currentProcessExeLower() {
-    char path[MAX_PATH] = {0};
-    GetModuleFileNameA(nullptr, path, MAX_PATH); // NULL => current process image
-    std::string p(path);
-    size_t slash = p.find_last_of("\\/");
-    std::string base = (slash == std::string::npos) ? p : p.substr(slash + 1);
-    std::transform(base.begin(), base.end(), base.begin(),
-                   [](unsigned char c) { return (char)std::tolower(c); });
-    return base;
+    return roplat::toLower(roplat::baseName(roplat::selfExePath()));
 }
 
 inline bool listContains(std::string list, const std::string& exeLower) {
-    std::string needle = exeLower;
-    std::transform(list.begin(), list.end(), list.begin(),
-                   [](unsigned char c) { return (char)std::tolower(c); });
-    std::transform(needle.begin(), needle.end(), needle.begin(),
-                   [](unsigned char c) { return (char)std::tolower(c); });
+    std::string needle = stripExeSuffix(roplat::toLower(exeLower));
+    list = roplat::toLower(list);
     size_t pos = 0;
     while (pos <= list.size()) {
         size_t comma = list.find(',', pos);
@@ -39,7 +41,7 @@ inline bool listContains(std::string list, const std::string& exeLower) {
         size_t b = name.find_first_not_of(" \t");
         size_t e = name.find_last_not_of(" \t");
         name = (b == std::string::npos) ? std::string() : name.substr(b, e - b + 1);
-        if (!name.empty() && name == needle) return true;
+        if (!name.empty() && stripExeSuffix(name) == needle) return true;
         if (comma == std::string::npos) break;
         pos = comma + 1;
     }

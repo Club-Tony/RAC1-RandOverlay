@@ -1,18 +1,19 @@
 #pragma once
+#include "platform.h"
 #include <string>
 #include <vector>
 #include <fstream>
-#include <windows.h>
-#include <regex>
+#include <cstdint>
+#include <filesystem>
 
 struct OverlayMessage {
     std::string text;
-    DWORD timestamp; // GetTickCount() when message was detected
+    uint64_t timestamp; // roplat::monotonicMs() when message was detected
 };
 
 class LogReader {
 public:
-    LogReader(const std::string& logDir = "C:\\ProgramData\\Archipelago\\logs")
+    explicit LogReader(const std::string& logDir = roplat::defaultArchipelagoLogDir())
         : logDir_(logDir), lastLineCount_(0), lastFileSize_(0) {
         findNewestLog();
         seedLineCount();
@@ -34,17 +35,13 @@ public:
 
         if (currentLogFile_.empty()) return messages;
 
-        // Check file size first
-        HANDLE hFile = CreateFileA(currentLogFile_.c_str(), GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFile == INVALID_HANDLE_VALUE) return messages;
-
-        DWORD fileSize = GetFileSize(hFile, NULL);
-        CloseHandle(hFile);
+        // Cheap guard: skip the full read unless the file actually grew.
+        std::error_code ec;
+        uintmax_t fileSize = std::filesystem::file_size(currentLogFile_, ec);
+        if (ec) return messages;
 
         if (fileSize <= lastFileSize_) return messages;
-        lastFileSize_ = fileSize;
+        lastFileSize_ = (uint64_t)fileSize;
 
         // Read file content
         std::ifstream file(currentLogFile_);
@@ -74,7 +71,7 @@ public:
                     while (!msg.empty() && msg.back() == ' ')
                         msg.pop_back();
                 }
-                messages.push_back({msg, GetTickCount()});
+                messages.push_back({msg, roplat::monotonicMs()});
             }
         }
 
@@ -86,7 +83,7 @@ private:
     std::string logDir_;
     std::string currentLogFile_;
     int lastLineCount_;
-    DWORD lastFileSize_;
+    uint64_t lastFileSize_;
 
     void findNewestLog() {
         currentLogFile_ = findNewestLogPath();
@@ -94,26 +91,33 @@ private:
 
     std::string findNewestLogPath() {
         // Parity with the AHK/PS runtimes: newest *.txt in the log dir,
-        // excluding generator/server logs (Generate_*, Server_*).
-        WIN32_FIND_DATAA fd;
-        std::string pattern = logDir_ + "\\*.txt";
-        HANDLE hFind = FindFirstFileA(pattern.c_str(), &fd);
-        if (hFind == INVALID_HANDLE_VALUE) return "";
+        // excluding generator/server logs (Generate_*, Server_*). The extension
+        // and prefix tests are case-insensitive to match the Windows shell
+        // semantics the other two runtimes get for free.
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        fs::directory_iterator it(logDir_, ec);
+        if (ec) return "";
 
         std::string newestFile;
-        FILETIME newestTime = {0, 0};
+        fs::file_time_type newestTime = fs::file_time_type::min();
 
-        do {
-            if (_strnicmp(fd.cFileName, "Generate_", 9) == 0 ||
-                _strnicmp(fd.cFileName, "Server_", 7) == 0)
+        for (const auto& entry : it) {
+            if (!entry.is_regular_file(ec) || ec) continue;
+
+            const std::string name = entry.path().filename().string();
+            if (roplat::toLower(entry.path().extension().string()) != ".txt") continue;
+            if (roplat::startsWithNoCase(name, "Generate_") ||
+                roplat::startsWithNoCase(name, "Server_"))
                 continue;
-            if (CompareFileTime(&fd.ftLastWriteTime, &newestTime) > 0) {
-                newestTime = fd.ftLastWriteTime;
-                newestFile = logDir_ + "\\" + fd.cFileName;
-            }
-        } while (FindNextFileA(hFind, &fd));
 
-        FindClose(hFind);
+            fs::file_time_type mtime = entry.last_write_time(ec);
+            if (ec) continue;
+            if (newestFile.empty() || mtime > newestTime) {
+                newestTime = mtime;
+                newestFile = entry.path().string();
+            }
+        }
         return newestFile;
     }
 
@@ -131,13 +135,9 @@ private:
             lastLineCount_++;
         file.close();
 
-        HANDLE hFile = CreateFileA(currentLogFile_.c_str(), GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFile != INVALID_HANDLE_VALUE) {
-            lastFileSize_ = GetFileSize(hFile, NULL);
-            CloseHandle(hFile);
-        }
+        std::error_code ec;
+        uintmax_t size = std::filesystem::file_size(currentLogFile_, ec);
+        if (!ec) lastFileSize_ = (uint64_t)size;
     }
 
     std::string parseLine(const std::string& line) {

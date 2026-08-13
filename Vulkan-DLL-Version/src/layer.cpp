@@ -10,13 +10,24 @@
  * supported emulators (rpcs3.exe / pcsx2-qt.exe / pcsx2.exe) so that leaving it
  * registered system-wide is safe for every other Vulkan app.
  */
-#include <windows.h>
+#include "platform.h"
+#ifdef _WIN32
+  #include <windows.h>
+#endif
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
 
-// MinGW doesn't define VK_LAYER_EXPORT
-#ifndef VK_LAYER_EXPORT
-#define VK_LAYER_EXPORT extern "C" __declspec(dllexport)
+// Always define this ourselves rather than accepting the header's version.
+// MinGW does not define VK_LAYER_EXPORT at all, but the Linux vk_layer.h DOES
+// — as a bare visibility attribute with no extern "C". Inheriting that leaves
+// the entry points C++-mangled, and the loader dlsym's the exact unmangled
+// names listed in the manifest, so the layer would build and install cleanly
+// and then never activate.
+#undef VK_LAYER_EXPORT
+#ifdef _WIN32
+  #define VK_LAYER_EXPORT extern "C" __declspec(dllexport)
+#else
+  #define VK_LAYER_EXPORT extern "C" __attribute__((visibility("default")))
 #endif
 
 #include <stdio.h>
@@ -24,6 +35,8 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <cstdint>
 
 #include "imgui.h"
 #include "backends/imgui_impl_vulkan.h"
@@ -41,14 +54,9 @@ static FILE* g_log = nullptr;
 
 static void LayerLog(const char* fmt, ...) {
     if (!g_log) {
-        char path[MAX_PATH];
-        HMODULE hm = nullptr;
-        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCSTR)&LayerLog, &hm);
-        GetModuleFileNameA(hm, path, MAX_PATH);
-        std::string logPath(path);
-        logPath = logPath.substr(0, logPath.find_last_of("\\/") + 1) + "layer_debug.log";
+        std::string dir = roplat::moduleDir();
+        if (dir.empty()) return;
+        std::string logPath = roplat::joinPath(dir, "layer_debug.log");
         g_log = fopen(logPath.c_str(), "w");
         if (!g_log) return;
     }
@@ -66,17 +74,20 @@ static bool g_disabled = false;
 
 static LogReader* g_logReader = nullptr;
 static std::string g_currentMessage;
-static ULONGLONG g_messageTimestamp = 0;
-static ULONGLONG g_lastPollTick = 0;      // parity: poll the log at PollMs, not per frame
+static uint64_t g_messageTimestamp = 0;
+static uint64_t g_lastPollTick = 0;      // parity: poll the log at PollMs, not per frame
 static bool g_readyMessageShown = false;  // parity: one-time startup notification
 static bool g_presetResolved = false;
 static rolayout::Metrics g_layout = rolayout::metricsForHeight(1080.0f, 48.0f);
 
 struct RuntimePresetSignals {
-    DWORD emulatorPid;
     std::vector<std::string> emulatorTitles;
     std::vector<std::string> clientTitles;
 };
+
+#ifdef _WIN32
+
+static DWORD g_titleScanPid = 0;
 
 static BOOL CALLBACK CollectPresetWindowTitles(HWND hwnd, LPARAM value) {
     auto* signals = reinterpret_cast<RuntimePresetSignals*>(value);
@@ -89,12 +100,10 @@ static BOOL CALLBACK CollectPresetWindowTitles(HWND hwnd, LPARAM value) {
 
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
-    if (pid == signals->emulatorPid) {
+    if (pid == g_titleScanPid) {
         signals->emulatorTitles.push_back(title);
     } else {
-        std::string lower = title;
-        std::transform(lower.begin(), lower.end(), lower.begin(),
-                       [](unsigned char c) { return (char)std::tolower(c); });
+        std::string lower = roplat::toLower(title);
         if (lower.find("ratchet") != std::string::npos &&
             lower.find("client") != std::string::npos)
             signals->clientTitles.push_back(title);
@@ -102,14 +111,50 @@ static BOOL CALLBACK CollectPresetWindowTitles(HWND hwnd, LPARAM value) {
     return TRUE;
 }
 
+// Collect the window titles that tell RAC2 apart from RAC3.
+static void CollectPresetSignals(const std::string& processExe,
+                                 RuntimePresetSignals& signals) {
+    if (!rogate::needsWindowTitleSignals(processExe, g_config.enabledPresets)) return;
+    g_titleScanPid = GetCurrentProcessId();
+    EnumWindows(CollectPresetWindowTitles, reinterpret_cast<LPARAM>(&signals));
+}
+
+#else
+
+// No portable equivalent exists on Linux. Reading another client's window title
+// is exactly what Wayland's security model forbids, and the X11 route
+// (_NET_CLIENT_LIST) is a dead end on modern setups. RAC2/RAC3 are instead
+// disambiguated from the ini — see the explicit-preset fallback below.
+static void CollectPresetSignals(const std::string&, RuntimePresetSignals&) {}
+
+#endif // _WIN32
+
 static bool RefreshRuntimePreset() {
-    RuntimePresetSignals signals = { GetCurrentProcessId(), {}, {} };
+    RuntimePresetSignals signals;
     std::string processExe = rogate::currentProcessExeLower();
-    if (rogate::needsWindowTitleSignals(processExe, g_config.enabledPresets))
-        EnumWindows(CollectPresetWindowTitles, reinterpret_cast<LPARAM>(&signals));
+    CollectPresetSignals(processExe, signals);
     std::string detected = rogate::detectPreset(
         processExe, g_config.enabledPresets,
         signals.emulatorTitles, signals.clientTitles);
+
+#ifndef _WIN32
+    // With no title signals, a PCSX2 host running with both RAC2 and RAC3
+    // enabled is unresolvable, and detectPreset correctly refuses to guess.
+    // Rather than pausing forever with no explanation, honour the ini's
+    // ActivePreset as the user's explicit answer.
+    if (detected.empty() &&
+        rogate::needsWindowTitleSignals(processExe, g_config.enabledPresets) &&
+        (g_config.activePreset == "RAC2" || g_config.activePreset == "RAC3")) {
+        detected = g_config.activePreset;
+        static bool explained = false;
+        if (!explained) {
+            explained = true;
+            LayerLog("RAC2/RAC3 both enabled and window titles are unreadable on "
+                     "this platform; using ActivePreset=%s from the ini. Set "
+                     "ActivePreset to pick the other game.", detected.c_str());
+        }
+    }
+#endif
 
     if (detected.empty()) {
         if (g_presetResolved) {
@@ -131,14 +176,14 @@ static bool RefreshRuntimePreset() {
 // Message alpha lifecycle (parity with AHK/PS fade behavior):
 // fade in over FadeInMs (inside the hold window), hold until DisplayMs,
 // fade out over FadeOutMs, then clear. Returns 0 when nothing should draw.
-static float MessageAlpha(ULONGLONG now) {
+static float MessageAlpha(uint64_t now) {
     if (g_currentMessage.empty()) return 0.0f;
-    ULONGLONG t = now - g_messageTimestamp;
-    ULONGLONG holdEnd = (ULONGLONG)g_config.displayMs;
-    ULONGLONG fadeEnd = holdEnd + (ULONGLONG)g_config.fadeOutMs;
+    uint64_t t = now - g_messageTimestamp;
+    uint64_t holdEnd = (uint64_t)g_config.displayMs;
+    uint64_t fadeEnd = holdEnd + (uint64_t)g_config.fadeOutMs;
     if (t >= fadeEnd) { g_currentMessage.clear(); return 0.0f; }
     float a = 1.0f;
-    if (g_config.fadeInMs > 0 && t < (ULONGLONG)g_config.fadeInMs)
+    if (g_config.fadeInMs > 0 && t < (uint64_t)g_config.fadeInMs)
         a = (float)t / (float)g_config.fadeInMs;
     else if (t >= holdEnd && g_config.fadeOutMs > 0)
         a = 1.0f - (float)(t - holdEnd) / (float)g_config.fadeOutMs;
@@ -170,7 +215,7 @@ static std::vector<bool>          g_cmdRecorded;
 static std::vector<VkSemaphore>   g_overlaySems; // one per swapchain image
 static bool g_renderReady = false;
 static bool g_imguiReady  = false;
-static ULONGLONG g_lastPresentTick = 0;
+static uint64_t g_lastPresentTick = 0;
 static ImFont* g_primaryFont = nullptr;
 static ImFont* g_digitFont = nullptr;
 
@@ -178,10 +223,12 @@ static void ShowReadyIfPossible() {
     if (!g_renderReady || !g_presetResolved || g_readyMessageShown) return;
     g_readyMessageShown = true;
     g_currentMessage = "Archipelago Overlay ready - waiting for events";
-    g_messageTimestamp = GetTickCount64();
-    roarch::promptIfNotRunning(g_config.launcherExe,
-                               g_config.activePreset,
-                               g_config.clientComponent);
+    g_messageTimestamp = roplat::monotonicMs();
+    if (!roarch::promptIfNotRunning(g_config.launcherExe,
+                                    g_config.activePreset,
+                                    g_config.clientComponent))
+        LayerLog("Archipelago is not running - no events will appear until a "
+                 "client is started (log dir: %s)", g_config.logDir.c_str());
 }
 
 static VkResult VKAPI_CALL AllocateLayerCommandBuffers(
@@ -264,7 +311,15 @@ static bool InitImgui() {
     g_layout = rolayout::metricsForHeight((float)g_swapExtent.height, baseFontPx);
     const float fontPx = g_layout.fontPx;
     ImFont* font = nullptr;
-    std::string fontPath = rofont::resolveFamilyToFile(g_config.fontFamily);
+    // An explicit FontFile wins over family-name resolution — the escape hatch
+    // for platforms with no font registry to search.
+    std::string fontPath = (!g_config.fontFile.empty() &&
+                            roplat::fileExists(g_config.fontFile))
+                         ? g_config.fontFile
+                         : rofont::resolveFamilyToFile(g_config.fontFamily);
+    if (!g_config.fontFile.empty() && fontPath != g_config.fontFile)
+        LayerLog("FontFile '%s' does not exist, ignoring",
+                 g_config.fontFile.c_str());
     const std::string digitFontPath = rofont::resolveFamilyToFile(g_config.fontFallback);
     if (fontPath.empty()) {
         LayerLog("Font '%s' not installed, trying fallback '%s'",
@@ -518,7 +573,7 @@ static void DrawOverlay(VkCommandBuffer cmd, float alpha) {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)g_swapExtent.width, (float)g_swapExtent.height);
 
-    ULONGLONG now = GetTickCount64();
+    uint64_t now = roplat::monotonicMs();
     float dt = g_lastPresentTick ? (now - g_lastPresentTick) / 1000.0f : (1.0f / 60.0f);
     if (dt <= 0.0f) dt = 1.0f / 60.0f;
     io.DeltaTime = dt;
@@ -708,8 +763,8 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_QueuePresentKHR(
         LayerLog("QueuePresentKHR hook LIVE (g_logReader=%p disabled=%d)", (void*)g_logReader, (int)g_disabled); }
 
     // Poll for new messages at PollMs cadence (parity with AHK/PS — not per frame).
-    ULONGLONG now = GetTickCount64();
-    if (!g_disabled && g_logReader && (now - g_lastPollTick) >= (ULONGLONG)g_config.pollMs) {
+    uint64_t now = roplat::monotonicMs();
+    if (!g_disabled && g_logReader && (now - g_lastPollTick) >= (uint64_t)g_config.pollMs) {
         g_lastPollTick = now;
         RefreshRuntimePreset();
         ShowReadyIfPossible();
