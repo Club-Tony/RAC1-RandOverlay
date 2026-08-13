@@ -33,6 +33,7 @@ jobs:
             build-essential cmake pkg-config \
             libvulkan-dev vulkan-tools mesa-vulkan-drivers \
             vulkan-validationlayers libfontconfig1-dev \
+            libxcb1-dev xvfb \
             fonts-dejavu-core fonts-liberation
 
       - name: Pin Dear ImGui
@@ -109,7 +110,17 @@ jobs:
             || { echo "::error::gate did not activate for a suffixless rpcs3"; exit 1; }
           echo "Gate activated for a suffixless Linux emulator name."
 
-      - name: Upload layer
+      - name: Live tests (present loop, overlay readback, validation)
+        env:
+          RANDOVERLAY_BUILD_DIR: Vulkan-DLL-Version/build
+        run: |
+          # xvfb supplies the X server the xcb surface needs. This is the only
+          # step that exercises vkQueuePresentKHR, the semaphore handoff and
+          # ImGui rendering — everything above it stops at device creation.
+          xvfb-run -a --server-args="-screen 0 1280x720x24" \
+            bash ./Vulkan-DLL-Version/tests/run_live_tests.sh all
+
+      - name: Upload layer and captured frame
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -117,4 +128,6 @@ jobs:
           path: |
             Vulkan-DLL-Version/build/libVkLayer_RandOverlay.so
             Vulkan-DLL-Version/build/RandOverlay_layer.json
+            /tmp/randoverlay-live/frame.ppm
+            /tmp/randoverlay-live/mock_*.txt
           if-no-files-found: warn

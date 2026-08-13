@@ -159,6 +159,40 @@ if(RANDOVERLAY_BUILD_TESTS)
              COMMAND randoverlay_tests "${CMAKE_CURRENT_SOURCE_DIR}/../RandOverlay.ini")
 endif()
 
+# ── Mock Vulkan host ──────────────────────────────────────────────────────────
+# A real present loop built under the emulator's own name so the layer's process
+# gate activates. This is the only way to exercise vkQueuePresentKHR, the
+# semaphore handoff and ImGui rendering without an actual emulator.
+option(RANDOVERLAY_BUILD_MOCK_HOST "Build the mock Vulkan host (named rpcs3)" ON)
+
+if(RANDOVERLAY_BUILD_MOCK_HOST)
+    find_library(VULKAN_LOADER_LIB NAMES vulkan vulkan-1
+                 HINTS "$ENV{VULKAN_SDK}/Lib" "$ENV{VULKAN_SDK}/lib")
+    if(NOT WIN32)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(XCB QUIET xcb)
+        endif()
+    endif()
+
+    if(VULKAN_LOADER_LIB AND (WIN32 OR XCB_FOUND))
+        add_executable(randoverlay_mock_host tests/mock_vk_host.cpp)
+        # The filename IS the test fixture: the process gate keys off it.
+        set_target_properties(randoverlay_mock_host PROPERTIES OUTPUT_NAME "rpcs3")
+        target_include_directories(randoverlay_mock_host PRIVATE "${VULKAN_INCLUDE_DIR}")
+        target_link_libraries(randoverlay_mock_host PRIVATE ${VULKAN_LOADER_LIB})
+        if(NOT WIN32)
+            target_include_directories(randoverlay_mock_host PRIVATE ${XCB_INCLUDE_DIRS})
+            target_link_libraries(randoverlay_mock_host PRIVATE ${XCB_LIBRARIES})
+        endif()
+        message(STATUS "Mock host        -> rpcs3")
+    else()
+        message(WARNING
+            "Mock host skipped: need the Vulkan loader library"
+            "${WIN32:+ and xcb}. Install libvulkan-dev and libxcb1-dev.")
+    endif()
+endif()
+
 # ── Layer manifest ────────────────────────────────────────────────────────────
 # Generated rather than committed so library_path always matches the artifact
 # this build actually produced.
