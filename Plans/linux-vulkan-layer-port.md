@@ -75,7 +75,10 @@ Mesa 23.2 lavapipe.
 | Self-disables in a non-emulator | **Passing** — `process=vulkaninfo … targeted=0, disabled=1` |
 | Activates for a suffixless `rpcs3` | **Passing** — `process=rpcs3 … targeted=1, disabled=0`, RAC1 preset resolved |
 | Installed layer resolves ini + a Linux log dir | **Passing** — `logDir=~/.local/share/Archipelago/logs` |
-| Khronos validation over a real present loop | **Not run** — needs the Linux mock host (below) |
+| Overlay actually renders into the presented frame | **Passing** — readback shows 0 differing pixels with the layer disabled vs 26964 with an event |
+| Khronos validation over a real present loop | **Passing** — validation confirmed loaded, zero errors |
+| Repeated swapchain rebuild (per-swapchain lifecycle) | **Passing** — 4 rebuilds, layer re-initialised on all, zero validation errors |
+| Linux CI (`ubuntu-latest`, Xvfb + lavapipe) | **Passing** — 15/15 live tests, same pixel counts as local |
 | Real RPCS3 + RAC1, windowed and exclusive fullscreen | **Not started** — needs a Linux box or a VM with GPU passthrough; cannot be done in WSL2 |
 
 Reproduce with:
@@ -112,20 +115,41 @@ with `bad interpreter: /usr/bin/env bash^M`.
 
 ## Remaining work
 
-- **`tests/mock_vk_host.cpp` Linux port.** Currently builds a Windows binary
-  named `rpcs3.exe` to trip the process gate. Needs a Linux binary named
-  `rpcs3` using `VK_EXT_headless_surface` under lavapipe (cleanest for CI), or
-  an xcb surface under Xvfb. Headless readback should make the overlay-band
-  pixel assertion easier than the Windows screenshot route.
+Everything below needs something this environment cannot provide.
+
+- **Real RPCS3 + RAC1, windowed and exclusive fullscreen.** The certification
+  gate. Needs a Linux box or a VM with GPU passthrough.
 - **Flatpak verification.** The likeliest real-world failure: a sandboxed
   RPCS3/PCSX2 cannot see `~/.local/share/vulkan` or the Archipelago log dir.
   `install_layer.sh` detects the Flatpaks and prints the `flatpak override`
-  command, but this is untested.
+  command, but this is untested — needs flatpak plus a real emulator install.
 - **Layer coexistence** with MangoHud and gamescope, which also hook present.
-  The Windows suite already covers the OBS equivalent.
-- Two open Windows handoffs may bite harder on Mesa: the present queue family
-  is assumed to be 0, and `VK_ERROR_OUT_OF_DATE_KHR` semaphore lifecycle is
-  untested. RADV/lavapipe recreate swapchains differently from Windows drivers.
+  Partially covered: the layer is proven to coexist with the Khronos validation
+  layer in the chain, but not with another present-hooking overlay.
+- **Present queue family assumption.** The layer assumes family 0. lavapipe
+  exposes a single queue family, so this cannot be exercised here at all — it
+  needs real multi-queue hardware.
+
+### Live test harness
+
+`tests/run_live_tests.sh` is the Linux counterpart of `run_live_tests.ps1`.
+`mock_vk_host.cpp` builds on both platforms — Win32 or xcb — as a binary named
+`rpcs3`/`rpcs3.exe` so the process gate activates, and gained `MOCK_READBACK=1`,
+which copies the presented swapchain image back to host memory and measures
+overlay coverage. That replaces the desktop-screenshot approach with an
+in-process measurement, and works headlessly under Xvfb.
+
+Two traps worth remembering, both of which produced confident false passes:
+
+- **Validation never loaded.** Ubuntu 22.04 ships loader 1.3.204, which predates
+  `VK_LOADER_LAYERS_ENABLE`, so `VK_INSTANCE_LAYERS` is required; and the
+  validation layer reports nowhere unless the app registers a debug messenger or
+  `vk_layer_settings.txt` redirects it to stdout. With neither, the error count
+  was zero because nothing was checking. The suite now asserts
+  `Khronos Validation Layer Active` before trusting a clean result.
+- **The pixel control was not a control.** It left the one-time "ready" notice on
+  screen, so it measured *more* differing pixels than the event run. It now runs
+  with `DISABLE_RANDOVERLAY=1` for a true zero.
 
 ## Notes
 
