@@ -68,8 +68,8 @@ jobs:
           # Software Vulkan, so no GPU is needed on the runner.
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: |
-          ./Vulkan-DLL-Version/install_layer.sh --build-dir Vulkan-DLL-Version/build
-          ./Vulkan-DLL-Version/install_layer.sh --status
+          bash ./Vulkan-DLL-Version/install_layer.sh --build-dir Vulkan-DLL-Version/build
+          bash ./Vulkan-DLL-Version/install_layer.sh --status
 
           # vulkaninfo is not an emulator, so the layer must load and then
           # immediately self-disable. That property is what makes shipping a
