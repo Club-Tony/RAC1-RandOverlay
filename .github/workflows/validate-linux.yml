@@ -1,0 +1,97 @@
+name: Validate (Linux)
+
+# Builds the implicit Vulkan layer for Linux and runs the headless unit tests.
+# Kept separate from validate.yml so that workflow stays a pure Windows gate
+# (Test-RandOverlay.ps1 asserts its runs-on marker).
+#
+# Real-emulator certification is NOT done here and cannot be: it needs a native
+# RPCS3/PCSX2 and a real swapchain. See Plans/linux-vulkan-layer-port.md.
+
+on:
+  push:
+    paths:
+      - 'Vulkan-DLL-Version/**'
+      - 'RandOverlay.ini'
+      - '.github/workflows/validate-linux.yml'
+  pull_request:
+    paths:
+      - 'Vulkan-DLL-Version/**'
+      - 'RandOverlay.ini'
+      - '.github/workflows/validate-linux.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libvulkan-dev vulkan-tools mesa-vulkan-drivers \
+            vulkan-validationlayers libfontconfig1-dev \
+            fonts-dejavu-core fonts-liberation
+
+      - name: Pin Dear ImGui
+        run: |
+          git clone https://github.com/ocornut/imgui.git Vulkan-DLL-Version/deps/imgui
+          git -C Vulkan-DLL-Version/deps/imgui checkout 8314fc3e5a10f7c6b670225065fce1dc8cfd396b
+
+      - name: Configure
+        run: >
+          cmake -S Vulkan-DLL-Version -B Vulkan-DLL-Version/build
+          -DCMAKE_BUILD_TYPE=Release -DRANDOVERLAY_FETCH_DEPS=OFF
+
+      - name: Build
+        run: cmake --build Vulkan-DLL-Version/build -j"$(nproc)"
+
+      - name: Verify layer artifact and exported entry points
+        run: |
+          so=Vulkan-DLL-Version/build/libVkLayer_RandOverlay.so
+          test -f "$so" || { echo "::error::layer .so not produced"; exit 1; }
+          for sym in RandOverlay_NegotiateLoaderLayerInterfaceVersion \
+                     RandOverlay_GetInstanceProcAddr \
+                     RandOverlay_GetDeviceProcAddr; do
+            nm -D --defined-only "$so" | grep -qw "$sym" \
+              || { echo "::error::missing exported symbol $sym"; exit 1; }
+          done
+          echo "All three negotiated entry points are exported."
+
+      - name: Unit tests
+        run: ctest --test-dir Vulkan-DLL-Version/build --output-on-failure
+
+      - name: Layer discovery + process gate (lavapipe)
+        env:
+          # Software Vulkan, so no GPU is needed on the runner.
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: |
+          ./Vulkan-DLL-Version/install_layer.sh --build-dir Vulkan-DLL-Version/build
+          ./Vulkan-DLL-Version/install_layer.sh --status
+
+          # vulkaninfo is not an emulator, so the layer must load and then
+          # immediately self-disable. That property is what makes shipping a
+          # GLOBAL implicit layer safe, so assert it rather than assume it.
+          vulkaninfo --summary > /tmp/vkinfo.txt 2>&1 || true
+          grep -q VK_LAYER_RANDOVERLAY_overlay /tmp/vkinfo.txt \
+            || { echo "::error::loader did not enumerate the layer"; cat /tmp/vkinfo.txt; exit 1; }
+          echo "Layer enumerated by the loader."
+
+          log="$HOME/.local/share/RandOverlay/layer_debug.log"
+          if [ -f "$log" ]; then
+            grep -qi "disabl\|not a supported\|gate" "$log" \
+              && echo "Layer self-disabled in a non-emulator host, as expected." \
+              || { echo "::error::layer did not self-disable in vulkaninfo"; cat "$log"; exit 1; }
+          fi
+
+      - name: Upload layer
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libVkLayer_RandOverlay-linux
+          path: |
+            Vulkan-DLL-Version/build/libVkLayer_RandOverlay.so
+            Vulkan-DLL-Version/build/RandOverlay_layer.json
+          if-no-files-found: warn

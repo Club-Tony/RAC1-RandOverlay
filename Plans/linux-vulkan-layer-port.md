@@ -1,0 +1,136 @@
+# Linux Vulkan Layer Port
+
+**Status:** Awaiting Manual Action
+**Created:** 2026-08-12
+
+## Context
+
+All three overlay runtimes were Windows-only. AutoHotkey has no Linux
+equivalent and WPF is .NET Framework, so neither of those ports is possible.
+The Vulkan layer is different: Vulkan layers are a Khronos mechanism that works
+identically on Linux, and layer discovery there is simpler than on Windows —
+a JSON manifest in `~/.local/share/vulkan/implicit_layer.d/` replaces
+registry registration under `HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers`.
+
+The layer also never touches the emulator process: it tails an Archipelago log
+file, so the data layer carried over unchanged. Measured Win32 surface before
+the port was ~39 call sites across ~1,500 lines, with `layer_dispatch.h` and
+`overlay_layout.h` at zero.
+
+## What shipped
+
+**New:** `src/platform.h` — the entire platform abstraction. Everything else
+uses `std::filesystem`, `std::chrono` and `std::getenv`, so only three
+functions are genuinely per-platform: `selfExePath()` (`GetModuleFileNameA`
+vs `/proc/self/exe`), `moduleDir()` (`GetModuleHandleEx` vs `dladdr`), and
+`processRunningWithPrefix()` (Toolhelp vs a `/proc` scan).
+
+**Ported:** `config.h`, `log_reader.h`, `process_gate.h`, `font_resolver.h`,
+`arch_client_check.h`, `layer.cpp`. The Vulkan dispatch chain, present hook,
+semaphore handoff, fade math, layout scaling and mixed-font digit rendering
+were not touched.
+
+**Build:** `CMakeLists.txt` builds both platforms from one source set;
+`RandOverlay_layer.json.in` + `install_layer.sh` replace the registry step;
+`.github/workflows/validate-linux.yml` builds and tests on `ubuntu-latest`
+under lavapipe.
+
+**Not ported, deliberately:** `RandOverlay.ahk`, `PS+WPF-Version/`, and the
+injected-DLL fallback (`overlay.cpp`, `injector.cpp`, MinHook) — the last is
+Windows-only by construction and already documented as broken and unshipped.
+
+### Three decisions worth remembering
+
+1. **`.exe` suffix normalization** (`process_gate.h`). Linux binaries are
+   `rpcs3`, not `rpcs3.exe`. Rather than fork the process lists, both sides of
+   every comparison are stripped in `listContains`, so one set of literals
+   serves both platforms and the ini needs no per-OS process names.
+
+2. **fontconfig always substitutes.** `FcFontMatch` never fails — asking for a
+   font that is not installed returns something else. `resolveViaFontconfig`
+   therefore verifies the matched family against the request and returns `""`
+   on mismatch. Without that check a Linux user asking for `HandelGothic BT`
+   would silently get DejaVu Sans. The ini now also carries
+   `FontFamilyLinux`/`FontFallbackLinux`/`FontFileLinux`.
+
+3. **RAC2/RAC3 disambiguation is gone on Linux.** It relied on `EnumWindows`
+   reading PCSX2's window title, which Wayland forbids by design. The collector
+   is behind `#ifdef _WIN32`; on Linux the layer falls back to the ini's
+   `ActivePreset` and logs why once. RAC1/RPCS3 is unaffected — unambiguous by
+   process name.
+
+## Verification
+
+Verified on Ubuntu 22.04 (WSL2), GCC 11.4, CMake 3.22, Vulkan headers 1.3.204,
+Mesa 23.2 lavapipe.
+
+| Step | State |
+|---|---|
+| Windows unit tests (86, was 34) | **Passing** — `86 passed, 0 failed` |
+| Windows layer builds, 3 entry points exported | **Passing** — no regression |
+| Linux build (`libVkLayer_RandOverlay.so`) | **Passing** — clean, fontconfig detected |
+| Linux unit tests | **Passing** — `86 passed, 0 failed`, ctest green |
+| Exports unmangled, only the 9 intended symbols visible | **Passing** |
+| Loader enumerates the layer | **Passing** — `vulkaninfo` lists `VK_LAYER_RANDOVERLAY_overlay` |
+| Self-disables in a non-emulator | **Passing** — `process=vulkaninfo … targeted=0, disabled=1` |
+| Activates for a suffixless `rpcs3` | **Passing** — `process=rpcs3 … targeted=1, disabled=0`, RAC1 preset resolved |
+| Installed layer resolves ini + a Linux log dir | **Passing** — `logDir=~/.local/share/Archipelago/logs` |
+| Khronos validation over a real present loop | **Not run** — needs the Linux mock host (below) |
+| Real RPCS3 + RAC1, windowed and exclusive fullscreen | **Not started** — needs a Linux box or a VM with GPU passthrough; cannot be done in WSL2 |
+
+Reproduce with:
+
+```
+cmake -S Vulkan-DLL-Version -B Vulkan-DLL-Version/build/linux -DCMAKE_BUILD_TYPE=Release
+cmake --build Vulkan-DLL-Version/build/linux -j
+ctest --test-dir Vulkan-DLL-Version/build/linux --output-on-failure
+Vulkan-DLL-Version/install_layer.sh --build-dir build/linux
+```
+
+### Three bugs the live run caught
+
+All three build, install and start cleanly, then fail silently — which is why
+none would have been found by inspection.
+
+1. **C++-mangled entry points.** `vulkan/vk_layer.h` already defines
+   `VK_LAYER_EXPORT` on Linux, without `extern "C"`, so the original
+   `#ifndef` guard was skipped and the exports came out as
+   `_Z31RandOverlay_GetInstanceProcAddr…`. The loader `dlsym`s the exact
+   unmangled names from the manifest, so the layer would simply never
+   activate. Now `#undef`'d and defined unconditionally.
+2. **Windows `LogDir` adopted on Linux.** The shared ini sets
+   `LogDir=C:\ProgramData\…`, which overrode the platform probe — the overlay
+   would tail a path that cannot exist and never fire. Windows-shaped paths
+   are now rejected on Linux, with `LogDirLinux` as the explicit override.
+3. **Installed layer had no ini.** `install_layer.sh` placed only the `.so`,
+   so the layer resolved no config and ran on built-in defaults. It now
+   installs `RandOverlay.ini` alongside, and never overwrites an existing one.
+
+Also fixed: `*.sh text eol=lf` in `.gitattributes`. With `core.autocrlf=true`
+this repo would otherwise check `install_layer.sh` out as CRLF and it would die
+with `bad interpreter: /usr/bin/env bash^M`.
+
+## Remaining work
+
+- **`tests/mock_vk_host.cpp` Linux port.** Currently builds a Windows binary
+  named `rpcs3.exe` to trip the process gate. Needs a Linux binary named
+  `rpcs3` using `VK_EXT_headless_surface` under lavapipe (cleanest for CI), or
+  an xcb surface under Xvfb. Headless readback should make the overlay-band
+  pixel assertion easier than the Windows screenshot route.
+- **Flatpak verification.** The likeliest real-world failure: a sandboxed
+  RPCS3/PCSX2 cannot see `~/.local/share/vulkan` or the Archipelago log dir.
+  `install_layer.sh` detects the Flatpaks and prints the `flatpak override`
+  command, but this is untested.
+- **Layer coexistence** with MangoHud and gamescope, which also hook present.
+  The Windows suite already covers the OBS equivalent.
+- Two open Windows handoffs may bite harder on Mesa: the present queue family
+  is assumed to be 0, and `VK_ERROR_OUT_OF_DATE_KHR` semaphore lifecycle is
+  untested. RADV/lavapipe recreate swapchains differently from Windows drivers.
+
+## Notes
+
+- Never set `VK_ADD_IMPLICIT_LAYER_PATH` while the manifest is also installed
+  in a standard search directory — two discovery routes for one layer crash the
+  host. `install_layer.sh --status` warns if it is set.
+- `Test-RandOverlay.ps1:191` asserts `runs-on: windows-latest`, but scoped to
+  `validate.yml` only, so the new Linux workflow does not trip it.
