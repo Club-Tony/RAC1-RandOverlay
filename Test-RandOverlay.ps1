@@ -188,7 +188,16 @@ Invoke-Check "GitHub Actions workflow shape" {
     }
 
     $content = Get-Content -LiteralPath $workflowPath -Raw
-    foreach ($required in @("name:", "on:", "jobs:", "runs-on: windows-latest", "Test-RandOverlay.ps1")) {
+    foreach ($required in @(
+        "name:",
+        "on:",
+        "jobs:",
+        "runs-on: windows-latest",
+        "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "git rev-parse --verify --quiet",
+        "git merge-base",
+        "Test-RandOverlay.ps1"
+    )) {
         if ($content -notmatch [regex]::Escape($required)) {
             throw "Missing workflow marker: $required"
         }

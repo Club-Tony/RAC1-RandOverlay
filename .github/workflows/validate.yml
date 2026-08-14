@@ -29,18 +29,34 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BEFORE_SHA: ${{ github.event.before }}
         run: |
-          $range = ""
-          if ($env:EVENT_NAME -eq "pull_request" -and $env:PR_BASE_SHA) {
-            $range = "$($env:PR_BASE_SHA)...HEAD"
-          } elseif ($env:BEFORE_SHA -and $env:BEFORE_SHA -notmatch '^0+$') {
-            $range = "$($env:BEFORE_SHA)...HEAD"
+          function Test-AvailableCommit {
+            param([string]$Sha)
+
+            if (-not $Sha -or $Sha -match '^0+$') {
+              return $false
+            }
+
+            git rev-parse --verify --quiet "${Sha}^{commit}" | Out-Null
+            return $LASTEXITCODE -eq 0
           }
 
-          if ($range) {
-            .\Test-RandOverlay.ps1 -SkipAhkRuntime -GitDiffRange $range
-          } else {
-            .\Test-RandOverlay.ps1 -SkipAhkRuntime
+          # A missing pre-push commit is normal after a guarded history rewrite.
+          # Comparing the empty SHA-1 tree to HEAD validates every published file
+          # instead of silently reducing `git diff --check` to a clean-worktree no-op.
+          $emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+          $range = "$emptyTree..HEAD"
+
+          if ($env:EVENT_NAME -eq "pull_request" -and (Test-AvailableCommit $env:PR_BASE_SHA)) {
+            git merge-base $env:PR_BASE_SHA HEAD | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              $range = "$($env:PR_BASE_SHA)...HEAD"
+            }
+          } elseif (Test-AvailableCommit $env:BEFORE_SHA) {
+            # Two-dot tree comparison remains valid for non-ancestor force-pushes.
+            $range = "$($env:BEFORE_SHA)..HEAD"
           }
+
+          .\Test-RandOverlay.ps1 -SkipAhkRuntime -GitDiffRange $range
 
       - name: Run Vulkan installer lifecycle tests
         shell: pwsh
