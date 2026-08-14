@@ -124,7 +124,12 @@ function Normalize-Games([string[]]$Selected) {
 }
 
 function Get-FileSha256([string]$Path) {
-    (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        try { ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-', '') }
+        finally { $stream.Dispose() }
+    } finally { $hasher.Dispose() }
 }
 
 function Resolve-PayloadRoot {

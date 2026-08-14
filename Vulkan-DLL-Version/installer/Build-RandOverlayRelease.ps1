@@ -19,7 +19,14 @@ if (-not $OutputRoot) { $OutputRoot = Join-Path $VulkanRoot 'dist' }
 if (-not $LayerDll) { $LayerDll = Join-Path $VulkanRoot 'build\RandOverlay_layer.dll' }
 if (-not (Test-Path -LiteralPath $LayerDll -PathType Leaf)) { throw "Build the layer first; DLL missing at $LayerDll" }
 
-function Get-Sha([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant() }
+function Get-Sha([string]$Path) {
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        try { ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-', '') }
+        finally { $stream.Dispose() }
+    } finally { $hasher.Dispose() }
+}
 function Remove-Tree([string]$Path) { if ([IO.Directory]::Exists($Path)) { [IO.Directory]::Delete([IO.Path]::GetFullPath($Path), $true) } }
 function Write-Json([string]$Path, $Value) { $Value | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Path -Encoding UTF8 }
 
@@ -48,6 +55,14 @@ function New-SelfExtractingBat([string]$ZipPath, [string]$Destination) {
     $extractor = @'
 param([Parameter(Mandatory)][string]$SelfPath, [Parameter(Mandatory)][string]$ExpectedSha256)
 $ErrorActionPreference = 'Stop'
+function Get-Sha256([string]$Path) {
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        try { ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-', '') }
+        finally { $stream.Dispose() }
+    } finally { $hasher.Dispose() }
+}
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('RandOverlaySetup-' + [guid]::NewGuid().ToString('N'))
 try {
     New-Item -ItemType Directory -Path $tempRoot | Out-Null
@@ -60,7 +75,7 @@ try {
     $index = $text.LastIndexOf($marker)
     if ($index -lt 0) { throw 'Embedded payload marker is missing. Re-download the installer.' }
     [IO.File]::WriteAllBytes($zipPath, [Convert]::FromBase64String($text.Substring($index + $marker.Length).Trim()))
-    $actualSha = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToUpperInvariant()
+    $actualSha = Get-Sha256 $zipPath
     if ($actualSha -ne $ExpectedSha256) { throw "Embedded ZIP failed verification. Expected $ExpectedSha256; got $actualSha." }
     Write-Host "[OK] Embedded ZIP verified: $actualSha" -ForegroundColor Green
     $expanded = Join-Path $tempRoot 'expanded'
