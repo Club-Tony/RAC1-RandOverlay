@@ -115,20 +115,35 @@ with `bad interpreter: /usr/bin/env bash^M`.
 
 ## Remaining work
 
-Everything below needs something this environment cannot provide.
+Everything below needs hardware or software this environment cannot provide.
+Both have a prepared script or checklist, so neither needs re-derivation.
 
-- **Real RPCS3 + RAC1, windowed and exclusive fullscreen.** The certification
-  gate. Needs a Linux box or a VM with GPU passthrough.
+**Needs real hardware** — a live USB with persistence, dual-boot, or a Steam
+Deck. Not Hyper-V or VirtualBox: neither gives a Linux guest a Vulkan device, so
+RPCS3 falls back to software and none of these gates mean anything.
+Follow `Plans/handoffs/linux-certification-runbook.md`.
+
+- **Real RPCS3 + RAC1, windowed and fullscreen.** Note that "exclusive
+  fullscreen" is a Windows concept — `VK_EXT_full_screen_exclusive` does not
+  exist on Linux. The equivalent case is the compositor granting *direct
+  scanout*, which is what the runbook tests.
+- **Present queue family assumption.** The layer assumes family 0. lavapipe
+  exposes exactly one queue family, so this is untestable here. Running
+  `run_live_tests.sh` on a real GPU closes it.
+
+**Runs in a plain VM** (no GPU needed) via
+`tests/run_desktop_integration_tests.sh`:
+
 - **Flatpak verification.** The likeliest real-world failure: a sandboxed
   RPCS3/PCSX2 cannot see `~/.local/share/vulkan` or the Archipelago log dir.
-  `install_layer.sh` detects the Flatpaks and prints the `flatpak override`
-  command, but this is untested — needs flatpak plus a real emulator install.
-- **Layer coexistence** with MangoHud and gamescope, which also hook present.
-  Partially covered: the layer is proven to coexist with the Khronos validation
-  layer in the chain, but not with another present-hooking overlay.
-- **Present queue family assumption.** The layer assumes family 0. lavapipe
-  exposes a single queue family, so this cannot be exercised here at all — it
-  needs real multi-queue hardware.
+  The script probes both and prints the `flatpak override` it would need.
+- **MangoHud coexistence.** Another GLOBAL implicit layer hooking the same
+  present call. Partially covered already — the layer is proven to coexist with
+  the Khronos validation layer — but not with a second present-hooking overlay.
+
+⚠️ The Flatpak and MangoHud code paths in that script have only been exercised
+along their skip branches; neither tool is installed on [dev-machine]. Expect to debug
+the script itself on first real use.
 
 ### Live test harness
 
