@@ -96,7 +96,7 @@ Aligned the layer's message display with the AHK and PS+WPF runtimes (compared a
 
 ## Verification Pass — 2026-08-06 (build, tests, OBS coexistence, validation)
 
-Ran the deterministic half of the Verification section on [dev-machine]. Toolchain intact:
+Ran the deterministic half of the Verification section on the development machine. Toolchain intact:
 `C:\mingw64\bin\g++` (GCC 14.2.0, x86_64-w64-mingw32), Vulkan SDK `1.4.341.1` including
 `VkLayer_khronos_validation.dll`.
 

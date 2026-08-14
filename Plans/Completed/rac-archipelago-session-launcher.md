@@ -8,8 +8,7 @@
 > **The deliverable does NOT live in this repo.** It is deliberately standalone and
 > unversioned at `%USERPROFILE%\Desktop\Games\Emulators\RAC-AP-Launcher\`
 > (`Play-RAC.bat`, `Start-RACSession.ps1`, `rac-launcher.config.json`, `README.md`).
-> Only this plan is archived here. See also the persistent memory
-> `[internal]`.
+> Only this plan is archived here.
 
 ## Context
 
