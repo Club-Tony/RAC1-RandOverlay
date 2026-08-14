@@ -121,9 +121,8 @@ region assertions:
 .\Vulkan-DLL-Version\tests\run_live_tests.ps1 -Mode all -KeepArtifacts
 ```
 
-From the [internal] workspace, the same suite is available through the optional native-window
-target `python tests\live\run_live_tests.py rac-overlay --fixture mock --keep-artifacts`.
-It is intentionally excluded from `all` and scheduled sweeps because it opens Vulkan windows.
+On Linux, the equivalent suite is `./Vulkan-DLL-Version/tests/run_live_tests.sh all`,
+which runs headlessly under `xvfb-run` and asserts on the presented frame directly.
 
 ## Smoke-Test Checklist
 

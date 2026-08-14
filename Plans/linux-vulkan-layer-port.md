@@ -142,8 +142,8 @@ Follow `Plans/handoffs/linux-certification-runbook.md`.
   the Khronos validation layer — but not with a second present-hooking overlay.
 
 ⚠️ The Flatpak and MangoHud code paths in that script have only been exercised
-along their skip branches; neither tool is installed on [dev-machine]. Expect to debug
-the script itself on first real use.
+along their skip branches, since neither tool was installed on the machine it
+was written on. Expect to debug the script itself on first real use.
 
 ### Live test harness
 

@@ -40,7 +40,8 @@ When a shared contract changes, update both implementations and their tests in t
 Run the checks in this order so later failures are attributable to the renderer rather than shared configuration:
 
 1. **Automated baseline**
-   - Run `python tests\live\run_live_tests.py rac-overlay --fixture mock --keep-artifacts` from [internal].
+   - Run `.\Vulkan-DLL-Version\tests\run_live_tests.ps1 -Mode all -KeepArtifacts` (Windows)
+     or `./Vulkan-DLL-Version/tests/run_live_tests.sh all` (Linux).
    - This covers 34/34 units, `Test-RandOverlay.ps1`, normal/disabled/OBS/validation scenarios, and RAC1/RAC2 visual assertions.
 2. **External-window milestone (multi-game plan) — complete**
    - Owner-confirmed AHK and PowerShell/WPF behavior across RAC1, RAC2, and RAC3.
