@@ -83,7 +83,12 @@ try {
     $env:RANDOVERLAY_BUNDLE_NOLAUNCH = '1'
     try { $bundleOutput = & cmd.exe /d /c $selfExtractingBat.FullName 2>&1 | Out-String; $bundleExit = $LASTEXITCODE }
     finally { Remove-Item Env:RANDOVERLAY_BUNDLE_NOLAUNCH -ErrorAction SilentlyContinue }
-    Assert-True ($bundleExit -eq 0 -and $bundleOutput -match 'Embedded ZIP verified' -and $bundleOutput -match 'decode/extract verification passed') 'self-contained BAT verifies and extracts embedded ZIP'
+    $bundlePassed = $bundleExit -eq 0 -and $bundleOutput -match 'Embedded ZIP verified' -and $bundleOutput -match 'decode/extract verification passed'
+    if (-not $bundlePassed) {
+        Write-Host "Self-contained BAT exit: $bundleExit" -ForegroundColor Yellow
+        Write-Host $bundleOutput
+    }
+    Assert-True $bundlePassed 'self-contained BAT verifies and extracts embedded ZIP'
     & (Join-Path $VulkanRoot 'installer\Build-RandOverlayRelease.ps1') -Format Zip -LayerDll $layerDll -OutputRoot (Join-Path $RunRoot 'dist-second') | Out-Null
     $secondZip = Get-ChildItem -LiteralPath (Join-Path $RunRoot 'dist-second') -Filter 'RandOverlay-Vulkan-*.zip' | Select-Object -First 1
     Assert-True ((Get-FileHash $zip.FullName -Algorithm SHA256).Hash -eq (Get-FileHash $secondZip.FullName -Algorithm SHA256).Hash) 'release ZIP rebuild is deterministic'
@@ -109,8 +114,17 @@ try {
 
     $interactiveRoot = Join-Path $RunRoot 'InteractiveLocalAppData\RandOverlay'
     $interactive = Invoke-InteractiveSetup $setup @('-InstallRoot',$interactiveRoot,'-RegistryPath',$RegistryPath,'-SkipPrerequisiteChecks') "1,2,3`r`n"
-    Assert-True ($interactive.ExitCode -eq 0 -and $interactive.Output -notmatch 'Initial active game') 'multi-game Enter flow installs without an active-game prompt or blank validation failure'
-    $interactiveState = Get-Content -LiteralPath (Join-Path $interactiveRoot 'setup-state.json') -Raw | ConvertFrom-Json
+    $interactivePassed = $interactive.ExitCode -eq 0 -and $interactive.Output -notmatch 'Initial active game'
+    if (-not $interactivePassed) {
+        Write-Host "Interactive setup exit: $($interactive.ExitCode)" -ForegroundColor Yellow
+        Write-Host $interactive.Output
+    }
+    Assert-True $interactivePassed 'multi-game Enter flow installs without an active-game prompt or blank validation failure'
+    $interactiveStatePath = Join-Path $interactiveRoot 'setup-state.json'
+    if (-not (Test-Path -LiteralPath $interactiveStatePath)) {
+        throw "Interactive setup did not create setup-state.json.`n$($interactive.Output)"
+    }
+    $interactiveState = Get-Content -LiteralPath $interactiveStatePath -Raw | ConvertFrom-Json
     Assert-True (@($interactiveState.enabledGames).Count -eq 3 -and $interactiveState.activeGame -eq 'RAC1') 'interactive multi-game install records all games with RAC1 fallback'
     Assert-True ([bool](Select-String -LiteralPath (Join-Path $interactiveRoot 'RandOverlay.ini') -Pattern '^EnabledPresets=RAC1,RAC2,RAC3$')) 'interactive install writes the automatic-detection enabled set'
     Invoke-Setup (Join-Path $interactiveRoot 'Setup-RandOverlay.ps1') @('-Action','Uninstall','-InstallRoot',$interactiveRoot,'-RegistryPath',$RegistryPath,'-NonInteractive') | Out-Null
