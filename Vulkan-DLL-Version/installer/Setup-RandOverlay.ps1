@@ -149,8 +149,21 @@ function Test-Payload([string]$Root) {
         if ((Get-FileSha256 $path) -ne ([string]$file.sha256).ToUpperInvariant()) { throw "Payload hash mismatch: $($file.path)" }
     }
     $layerDll = Join-Path $Root 'RandOverlay_layer.dll'
-    $signature = Get-AuthenticodeSignature -LiteralPath $layerDll
-    if ($signature.Status -notin @('Valid','NotSigned')) {
+    $signature = $null
+    $signatureUnavailable = $false
+    try {
+        $signature = Get-AuthenticodeSignature -LiteralPath $layerDll -ErrorAction Stop
+    } catch {
+        $signatureUnavailable =
+            $_.Exception -is [System.Management.Automation.CommandNotFoundException] -or
+            ([string]$_.FullyQualifiedErrorId) -match 'CommandNotFound|CouldNotAutoloadMatchingModule'
+        if (-not $signatureUnavailable) { throw }
+        Write-Warn 'Authenticode inspection is unavailable; exact SHA-256 payload verification passed.'
+    }
+    if (-not $signatureUnavailable -and -not $signature) {
+        throw 'Authenticode inspection returned no result.'
+    }
+    if ($signature -and $signature.Status -notin @('Valid','NotSigned')) {
         throw "Layer DLL has an invalid Authenticode status: $($signature.Status)"
     }
     $metadata

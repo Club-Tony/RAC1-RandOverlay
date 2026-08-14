@@ -67,6 +67,7 @@ New-Item -ItemType Directory -Path $RunRoot -Force | Out-Null
 try {
     $setupSource = Get-Content -LiteralPath (Join-Path $VulkanRoot 'installer\Setup-RandOverlay.ps1') -Raw
     Assert-True ($setupSource -match '(?s)\$cursorWasVisible\s*=\s*\[Console\]::CursorVisible.*\[Console\]::CursorVisible\s*=\s*\$false.*finally\s*\{\s*\[Console\]::CursorVisible\s*=\s*\$cursorWasVisible') 'interactive checklist hides and restores the console cursor'
+    Assert-True ($setupSource -match 'CouldNotAutoloadMatchingModule' -and $setupSource -match 'exact SHA-256 payload verification passed') 'setup has a hash-verified fallback when Authenticode tooling is unavailable'
 
     $layerDll = Join-Path $VulkanRoot 'build\RandOverlay_layer.dll'
     if (-not (Test-Path -LiteralPath $layerDll)) {
