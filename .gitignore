@@ -7,3 +7,8 @@ Vulkan-DLL-Version/dist/
 Vulkan-DLL-Version/tests/installer/artifacts/
 tests/live/artifacts/
 PS+WPF-Version/RandOverlay.log
+
+# Planning docs are internal process material and are kept in a private
+# planning repository. This repo is PUBLIC -- plan and handoff files must
+# never be committed here.
+Plans/
