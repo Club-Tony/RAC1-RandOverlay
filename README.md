@@ -112,6 +112,19 @@ The Vulkan installer lifecycle suite is also available directly:
 
 GitHub Actions runs the same validation on push and pull request events, with `-SkipAhkRuntime` because hosted runners are not reliable for overlay window smoke tests.
 
+## Public Repository Hygiene
+
+This public repository contains only product source and user-facing documentation. Keep
+planning documents, session notes, local assistant configuration, instruction files, and
+machine-specific paths out of commits.
+
+Before committing or pushing:
+
+- Stage explicit product paths; do not use broad staging commands.
+- Review both `git diff --cached --name-status` and `git diff --cached`.
+- Use a human author/committer identity and omit automated-tool attribution or co-author trailers.
+- Keep private workflow metadata under the ignored paths in `.gitignore`.
+
 The Vulkan renderer has a repo-local live suite that uses scratch configuration and logs,
 synthetic events, deterministic mock emulator windows, Khronos validation, and screenshot
 region assertions:

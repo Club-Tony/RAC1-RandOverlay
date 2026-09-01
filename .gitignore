@@ -13,5 +13,27 @@ PS+WPF-Version/RandOverlay.log
 # never be committed here.
 Plans/
 
-# Machine-local KiroCrew/Kiro CLI state
+# Machine-local workflow metadata and private instruction files
 .kiro/
+.claude/
+.codex/
+.agents/
+.cursor/
+.windsurf/
+.cline/
+.roo/
+.gemini/
+.continue/
+.opencode/
+AGENTS.md
+CLAUDE.md
+CODEX.md
+GEMINI.md
+.cursorrules
+.aiderignore
+.aider.conf.yml
+.aider.conf.yaml
+.github/copilot-instructions.md
+.github/agents/
+.github/instructions/
+.github/prompts/
