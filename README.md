@@ -122,7 +122,8 @@ Before committing or pushing:
 
 - Stage explicit product paths; do not use broad staging commands.
 - Review both `git diff --cached --name-status` and `git diff --cached`.
-- Use a human author/committer identity and omit automated-tool attribution or co-author trailers.
+- Use a human author/committer identity and omit automated-tool attribution or
+  automated-tool/agent co-author trailers.
 - Keep private workflow metadata under the ignored paths in `.gitignore`.
 
 The Vulkan renderer has a repo-local live suite that uses scratch configuration and logs,
