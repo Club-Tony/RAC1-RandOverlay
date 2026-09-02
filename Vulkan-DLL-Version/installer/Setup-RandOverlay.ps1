@@ -15,13 +15,29 @@ param(
     [switch]$NonInteractive,
     [switch]$Json,
     [switch]$ConfirmUpdate,
-    [switch]$KeepConfig
+    [switch]$KeepConfig,
+    [switch]$LoadOnly
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
-try { [Console]::Title = 'RAC RandOverlay Setup' } catch { }
+# Exit codes:
+#   0  success (including an interactive "Save and exit")
+#   1  unhandled error
+#   2  required prerequisites are missing
+#   3  reserved: an action needs explicit confirmation (not used yet)
+#   9  bootstrapper payload failure (set by the BAT/EXE wrappers, never here)
+# -LoadOnly defines every function and script variable without running an
+# action, so a front-end or test can dot-source this file:
+#   . .\Setup-RandOverlay.ps1 -LoadOnly -InstallRoot X -RegistryPath Y
+$script:ExitCode = 0
+$script:LogEnabled = $true
+$script:LogRoot = $null
+$script:LogPath = $null
+$script:ProgressCallback = $null
+
+if (-not $LoadOnly) { try { [Console]::Title = 'RAC RandOverlay Setup' } catch { } }
 
 $script:LayerName = 'VK_LAYER_RANDOVERLAY_overlay'
 $script:RepoApi = 'https://api.github.com/repos/Club-Tony/RAC1-RandOverlay'
@@ -30,11 +46,92 @@ $script:GameCatalog = [ordered]@{
     RAC2 = [pscustomobject]@{ Name='Ratchet & Clank 2'; Emulator='PCSX2'; Client='Ratchet & Clank 2 Client'; Apworld='rac2.apworld'; Url='https://pcsx2.net/downloads/' }
     RAC3 = [pscustomobject]@{ Name='Ratchet & Clank 3'; Emulator='PCSX2'; Client='Ratchet and Clank 3 Client'; Apworld='rac3.apworld'; Url='https://pcsx2.net/downloads/' }
 }
+# The only packages Setup may install automatically, keyed by the short name shown in menus.
+# Every other dependency is remediated through its official download page.
+$script:WinGetPackages = [ordered]@{ PCSX2 = 'PCSX2Team.PCSX2' }
+$script:AutoInstallAllowlist = @($script:WinGetPackages.Values)
 
-function Write-Step([string]$Message) { Write-Host "`n== $Message ==" -ForegroundColor Cyan }
-function Write-Ok([string]$Message) { Write-Host "[OK] $Message" -ForegroundColor Green }
-function Write-Warn([string]$Message) { Write-Host "[WARN] $Message" -ForegroundColor Yellow }
-function Write-Fail([string]$Message) { Write-Host "[MISSING] $Message" -ForegroundColor Red }
+function Protect-LogText([string]$Text) {
+    # Setup logs stay local, but they should still not carry the account name verbatim.
+    if ($Text -and $env:USERPROFILE) { return $Text.Replace($env:USERPROFILE, '%USERPROFILE%') }
+    $Text
+}
+
+function Write-Log([string]$Message, [string]$Level = 'INFO') {
+    # Append-only diagnostics under <InstallRoot>\logs; the newest five files are kept.
+    # Logging never fails an action: every error here is swallowed on purpose.
+    if (-not $script:LogEnabled -or -not $script:LogRoot) { return }
+    try {
+        if (-not $script:LogPath) {
+            New-Item -ItemType Directory -Path $script:LogRoot -Force | Out-Null
+            Get-ChildItem -LiteralPath $script:LogRoot -Filter 'setup-*.log' -File |
+                Sort-Object LastWriteTimeUtc -Descending | Select-Object -Skip 4 |
+                ForEach-Object { Remove-ExactOwnedPath $script:LogRoot $_.FullName }
+            $script:LogPath = Join-Path $script:LogRoot ('setup-{0}-{1}.log' -f (Get-Date).ToString('yyyyMMdd-HHmmss'), $PID)
+        }
+        $line = '{0} [{1}] {2}' -f (Get-Date).ToUniversalTime().ToString('o'), $Level, (Protect-LogText $Message)
+        [IO.File]::AppendAllText($script:LogPath, $line + [Environment]::NewLine, [Text.Encoding]::UTF8)
+    } catch { }
+}
+
+function Write-Step([string]$Message) { Write-Log $Message 'STEP'; Write-Host "`n== $Message ==" -ForegroundColor Cyan }
+function Write-Ok([string]$Message) { Write-Log $Message 'OK'; Write-Host "[OK] $Message" -ForegroundColor Green }
+function Write-Warn([string]$Message) { Write-Log $Message 'WARN'; Write-Host "[WARN] $Message" -ForegroundColor Yellow }
+function Write-Fail([string]$Message) { Write-Log $Message 'MISSING'; Write-Host "[MISSING] $Message" -ForegroundColor Red }
+
+function Write-ProgressEvent([string]$Stage, [int]$Percent, [string]$Message) {
+    # One structured progress record per install step. A host that set
+    # $script:ProgressCallback receives it directly; -Json callers get one
+    # compact JSON line; the console gets a short status line.
+    Write-Log ('{0}% {1}: {2}' -f $Percent, $Stage, $Message) 'PROGRESS'
+    if ($script:ProgressCallback) {
+        try { & $script:ProgressCallback $Stage $Percent $Message } catch { }
+        return
+    }
+    if ($Json) {
+        [pscustomobject]@{ event='progress'; stage=$Stage; percent=$Percent; message=$Message } | ConvertTo-Json -Compress
+        return
+    }
+    Write-Host ('[{0,3}%] {1}' -f $Percent, $Message) -ForegroundColor DarkGray
+}
+
+function ConvertTo-ComparableVersion([string]$Text) {
+    # Accepts "0.1.0", "v0.2.1-beta", "1.2.3+build" and rolling forms such as
+    # "0.0.42-19909-677e13da". Windows PowerShell has no SemanticVersion type.
+    $value = ([string]$Text).Trim()
+    if ($value -match '^[vV]\d') { $value = $value.Substring(1) }
+    if (-not ($value -match '^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?(?:[-+](.+))?$')) { throw "Unrecognized version: $Text" }
+    $numbers = @(1..4 | ForEach-Object { if ($matches[$_]) { [int]$matches[$_] } else { 0 } })
+    $suffix = if ($matches[5]) { [string]$matches[5] } else { '' }
+    [pscustomobject]@{ Numbers=$numbers; Suffix=$suffix; IsPrerelease=($suffix -ne ''); Text=$value }
+}
+
+function Compare-ReleaseVersion([string]$Left, [string]$Right) {
+    # Returns -1, 0 or 1. Numeric parts win; a suffixed version sorts below the
+    # bare release with the same numbers; two suffixes compare token by token,
+    # numerically where both tokens are numbers.
+    $a = ConvertTo-ComparableVersion $Left
+    $b = ConvertTo-ComparableVersion $Right
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($a.Numbers[$i] -ne $b.Numbers[$i]) { return [Math]::Sign($a.Numbers[$i] - $b.Numbers[$i]) }
+    }
+    if ($a.IsPrerelease -ne $b.IsPrerelease) { if ($a.IsPrerelease) { return -1 } else { return 1 } }
+    if (-not $a.IsPrerelease) { return 0 }
+    $leftTokens = @($a.Suffix -split '[.+-]')
+    $rightTokens = @($b.Suffix -split '[.+-]')
+    for ($i = 0; $i -lt [Math]::Max($leftTokens.Count, $rightTokens.Count); $i++) {
+        if ($i -ge $leftTokens.Count) { return -1 }
+        if ($i -ge $rightTokens.Count) { return 1 }
+        $leftNumber = 0; $rightNumber = 0
+        if ([int]::TryParse($leftTokens[$i], [ref]$leftNumber) -and [int]::TryParse($rightTokens[$i], [ref]$rightNumber)) {
+            if ($leftNumber -ne $rightNumber) { return [Math]::Sign($leftNumber - $rightNumber) }
+        } else {
+            $order = [string]::CompareOrdinal($leftTokens[$i].ToLowerInvariant(), $rightTokens[$i].ToLowerInvariant())
+            if ($order -ne 0) { return [Math]::Sign($order) }
+        }
+    }
+    0
+}
 
 function Get-FullPath([string]$Path) {
     [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path))
@@ -71,6 +168,7 @@ $script:InstalledSetupPath = Join-Path $InstallRoot 'Setup-RandOverlay.ps1'
 $script:CurrentRoot = Join-Path $InstallRoot 'current'
 $script:CachedPayloadRoot = Join-Path $InstallRoot 'package\payload'
 $script:RollbackRoot = Join-Path $InstallRoot 'rollback\previous'
+$script:LogRoot = Join-Path $InstallRoot 'logs'
 
 function Read-JsonFile([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
@@ -216,8 +314,9 @@ function Get-PrerequisiteStatus([string[]]$SelectedGames) {
     }
     if (($SelectedGames -contains 'RAC2') -or ($SelectedGames -contains 'RAC3')) {
         $pcsx2 = Find-Executable @('pcsx2-qt.exe','pcsx2.exe') @($dependencyPaths.pcsx2Path,(Join-Path $env:LOCALAPPDATA 'Programs\PCSX2\pcsx2-qt.exe'),(Join-Path $env:ProgramFiles 'PCSX2\pcsx2-qt.exe'))
-        if (-not $pcsx2 -and (Test-WinGetPackage 'PCSX2Team.PCSX2')) { $pcsx2 = 'Installed: PCSX2Team.PCSX2' }
-        $results.Add([pscustomobject]@{ Id='pcsx2'; Name='PCSX2 (selected by RAC2/RAC3)'; Required=$true; Ready=[bool]$pcsx2; Detail=$(if($pcsx2){$pcsx2}else{'Not found in known locations'}); Url='https://pcsx2.net/downloads/'; AutoInstall='PCSX2Team.PCSX2' })
+        $pcsx2Package = $script:WinGetPackages.PCSX2
+        if (-not $pcsx2 -and (Test-WinGetPackage $pcsx2Package)) { $pcsx2 = "Installed: $pcsx2Package" }
+        $results.Add([pscustomobject]@{ Id='pcsx2'; Name='PCSX2 (selected by RAC2/RAC3)'; Required=$true; Ready=[bool]$pcsx2; Detail=$(if($pcsx2){$pcsx2}else{'Not found in known locations'}); Url='https://pcsx2.net/downloads/'; AutoInstall=$pcsx2Package })
     }
     @($results)
 }
@@ -241,7 +340,8 @@ function Resolve-PrerequisitesInteractive([string[]]$SelectedGames) {
         Show-Prerequisites $results
         $missing = @($results | Where-Object { $_.Required -and -not $_.Ready })
         if ($missing.Count -eq 0) { return $true }
-        Write-Host "`n[R] Recheck  [O] Open official page  [P] Set custom path  [I] Install PCSX2 with WinGet  [S] Save and exit"
+        $autoInstallLabel = "Install $(@($script:WinGetPackages.Keys) -join '/') with WinGet"
+        Write-Host "`n[R] Recheck  [O] Open official page  [P] Set custom path  [I] $autoInstallLabel  [S] Save and exit"
         switch ((Read-Host 'Selection').Trim().ToUpperInvariant()) {
             'R' { continue }
             'O' {
@@ -250,10 +350,13 @@ function Resolve-PrerequisitesInteractive([string[]]$SelectedGames) {
                 if ([int]::TryParse((Read-Host 'Dependency number'), [ref]$number) -and $number -ge 1 -and $number -le $missing.Count) { Start-Process $missing[$number-1].Url }
             }
             'I' {
-                $pcsx2 = $missing | Where-Object { $_.AutoInstall -eq 'PCSX2Team.PCSX2' } | Select-Object -First 1
-                if (-not $pcsx2) { Write-Warn 'No missing allowlisted dependency supports automatic installation.'; continue }
-                if ((Read-Host 'Install PCSX2 from WinGet? [y/N]') -match '^(?i)y(es)?$') {
-                    & winget.exe install --id PCSX2Team.PCSX2 --exact --accept-source-agreements --accept-package-agreements
+                $autoItem = $missing | Where-Object { $_.AutoInstall -and ($script:AutoInstallAllowlist -contains $_.AutoInstall) } | Select-Object -First 1
+                if (-not $autoItem) { Write-Warn 'No missing allowlisted dependency supports automatic installation.'; continue }
+                $packageId = [string]$autoItem.AutoInstall
+                $packageName = @($script:WinGetPackages.GetEnumerator() | Where-Object { $_.Value -eq $packageId } | ForEach-Object { $_.Key })[0]
+                if ((Read-Host "Install $packageName from WinGet? [y/N]") -match '^(?i)y(es)?$') {
+                    Write-Log "WinGet install requested: $packageId"
+                    & winget.exe install --id $packageId --exact --accept-source-agreements --accept-package-agreements
                     if ($LASTEXITCODE -ne 0) { Write-Warn "WinGet exited $LASTEXITCODE." }
                 }
             }
@@ -365,6 +468,7 @@ function Complete-Install($Metadata, [string[]]$SelectedGames, [string]$Selected
     Test-EmulatorsStopped
     $payload = Resolve-PayloadRoot
     Test-Payload $payload | Out-Null
+    Write-ProgressEvent 'install' 60 'Staging verified layer files'
     $stage = Join-Path $InstallRoot ('.staging-' + [guid]::NewGuid().ToString('N'))
     $stageCurrent = Join-Path $stage 'current'
     New-Item -ItemType Directory -Path $stageCurrent -Force | Out-Null
@@ -396,6 +500,7 @@ function Complete-Install($Metadata, [string[]]$SelectedGames, [string]$Selected
     if ((Get-FullPath $PSCommandPath) -ne (Get-FullPath $script:InstalledSetupPath)) {
         Copy-Item -LiteralPath $PSCommandPath -Destination $script:InstalledSetupPath -Force
     }
+    Write-ProgressEvent 'register' 85 'Registering the Vulkan implicit layer'
     Set-CanonicalRegistration
 
     $state = [ordered]@{
@@ -405,6 +510,7 @@ function Complete-Install($Metadata, [string[]]$SelectedGames, [string]$Selected
         updatedAt=(Get-Date).ToUniversalTime().ToString('o'); files=@(Get-InstalledFileRecords $script:CurrentRoot)
     }
     Write-JsonFile $script:StatePath $state
+    Write-ProgressEvent 'done' 100 'Installation complete'
     Write-Ok "RandOverlay $($Metadata.version) installed for $($SelectedGames -join ', ')"
     Write-Ok "Automatic preset detection enabled; fallback preset: $SelectedActive"
 }
@@ -415,14 +521,18 @@ function Invoke-Install {
     if ($selected -notcontains $selectedActive) { throw 'ActiveGame must be one of the selected Games.' }
     $payload = Resolve-PayloadRoot
     $metadata = Test-Payload $payload
+    Write-ProgressEvent 'verify' 10 "Release payload $($metadata.version) verified"
     Save-PendingPackage $payload $metadata $selected $selectedActive
+    Write-ProgressEvent 'stage' 25 'Release payload cached for repair'
     if (-not $SkipPrerequisiteChecks) {
+        Write-ProgressEvent 'prerequisites' 40 'Checking prerequisites'
         $results = Get-PrerequisiteStatus $selected
         if ($NonInteractive) {
             Show-Prerequisites $results
             if (@($results | Where-Object { $_.Required -and -not $_.Ready }).Count -gt 0) {
                 Write-Warn 'Progress saved. Install missing prerequisites, then run Repair.'
-                exit 2
+                $script:ExitCode = 2
+                return
             }
         } elseif (-not (Resolve-PrerequisitesInteractive $selected)) {
             Write-Warn 'Progress saved. Run Setup or Repair when prerequisites are ready.'
@@ -474,7 +584,8 @@ function Invoke-Repair {
         $results = Get-PrerequisiteStatus $selected
         if ($NonInteractive -and @($results | Where-Object { $_.Required -and -not $_.Ready }).Count -gt 0) {
             Show-Prerequisites $results
-            exit 2
+            $script:ExitCode = 2
+            return
         }
         if (-not $NonInteractive -and -not (Resolve-PrerequisitesInteractive $selected)) { return }
     }
@@ -494,7 +605,9 @@ function Invoke-Configure {
         $results = Get-PrerequisiteStatus $selected
         if (@($results | Where-Object { $_.Required -and -not $_.Ready }).Count -gt 0) {
             Show-Prerequisites $results
-            throw 'Selected games have missing prerequisites.'
+            Write-Warn 'Selected games have missing prerequisites. Nothing was changed.'
+            $script:ExitCode = 2
+            return
         }
     }
     Update-PresetSelection $script:ConfigPath $selected $selectedActive
@@ -507,9 +620,11 @@ function Invoke-Configure {
 
 function Invoke-Uninstall {
     Test-EmulatorsStopped
+    Write-Log "Uninstall starting (KeepConfig=$KeepConfig); the logs folder is removed with the install"
+    $script:LogEnabled = $false
     Remove-OwnedRegistrations
     if (-not $KeepConfig -and (Test-Path -LiteralPath $script:ConfigPath)) { Remove-ExactOwnedPath $InstallRoot $script:ConfigPath }
-    foreach ($relative in @('current','package','rollback','setup-state.json','Setup-RandOverlay.ps1')) {
+    foreach ($relative in @('current','package','rollback','logs','setup-state.json','Setup-RandOverlay.ps1')) {
         $target = Join-Path $InstallRoot $relative
         if (Test-Path -LiteralPath $target) { Remove-ExactOwnedPath $InstallRoot $target }
     }
@@ -584,7 +699,7 @@ function Invoke-Preflight {
     $results = Get-PrerequisiteStatus $selected
     if ($Json) { [pscustomobject]@{ games=$selected; prerequisites=$results } | ConvertTo-Json -Depth 8 }
     else { Show-Prerequisites $results }
-    if (@($results | Where-Object { $_.Required -and -not $_.Ready }).Count -gt 0) { exit 2 }
+    if (@($results | Where-Object { $_.Required -and -not $_.Ready }).Count -gt 0) { $script:ExitCode = 2 }
 }
 
 function Invoke-CheckForUpdates {
@@ -593,7 +708,7 @@ function Invoke-CheckForUpdates {
     Write-Step 'Checking official GitHub Releases'
     $release = Invoke-RestMethod -Uri "$script:RepoApi/releases/latest" -Headers @{ 'User-Agent'='RandOverlay-Setup' }
     $latest = ([string]$release.tag_name).TrimStart('v')
-    if ([version]$latest -le [version]([string]$state.installedVersion)) { Write-Ok 'Already up to date.'; return }
+    if ((Compare-ReleaseVersion $latest ([string]$state.installedVersion)) -le 0) { Write-Ok 'Already up to date.'; return }
     Write-Host "Installed: $($state.installedVersion)"
     Write-Host "Available: $latest"
     Write-Host ([string]$release.body)
@@ -608,16 +723,19 @@ function Invoke-CheckForUpdates {
     try {
         $zip = Join-Path $temp $zipAsset.name
         $sums = Join-Path $temp 'SHA256SUMS.txt'
-        Invoke-WebRequest -Uri $zipAsset.browser_download_url -OutFile $zip
-        Invoke-WebRequest -Uri $sumAsset.browser_download_url -OutFile $sums
+        Write-ProgressEvent 'download' 20 "Downloading $($zipAsset.name)"
+        Invoke-WebRequest -Uri $zipAsset.browser_download_url -OutFile $zip -UseBasicParsing
+        Invoke-WebRequest -Uri $sumAsset.browser_download_url -OutFile $sums -UseBasicParsing
+        Write-ProgressEvent 'verify' 50 'Verifying the download against SHA256SUMS.txt'
         $line = Get-Content -LiteralPath $sums | Where-Object { $_ -match [regex]::Escape($zipAsset.name) } | Select-Object -First 1
         if (-not $line) { throw 'Release checksum does not list the ZIP.' }
         if ((Get-FileSha256 $zip) -ne (($line -split '\s+')[0].ToUpperInvariant())) { throw 'Downloaded ZIP failed SHA-256 verification.' }
+        Write-ProgressEvent 'install' 70 "Handing off to the $latest setup"
         $expanded = Join-Path $temp 'expanded'
         Expand-Archive -LiteralPath $zip -DestinationPath $expanded
         $setup = Get-ChildItem -LiteralPath $expanded -Filter 'Setup-RandOverlay.ps1' -Recurse | Select-Object -First 1
         if (-not $setup) { throw 'Downloaded release has no setup script.' }
-        $arguments = @('-NoProfile','-File',$setup.FullName,'-Action','Install','-Games',(@($state.enabledGames) -join ','),'-ActiveGame',$state.activeGame,'-InstallRoot',$InstallRoot)
+        $arguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$setup.FullName,'-Action','Install','-Games',(@($state.enabledGames) -join ','),'-ActiveGame',$state.activeGame,'-InstallRoot',$InstallRoot)
         & powershell.exe @arguments
         if ($LASTEXITCODE -ne 0) { throw "Updated setup exited $LASTEXITCODE" }
     } finally {
@@ -648,13 +766,26 @@ function Invoke-Interactive {
     }
 }
 
-switch ($Action) {
-    'Interactive' { Invoke-Interactive }
-    'Install' { Invoke-Install }
-    'Status' { Invoke-Status }
-    'Repair' { Invoke-Repair }
-    'Configure' { Invoke-Configure }
-    'CheckForUpdates' { Invoke-CheckForUpdates }
-    'Uninstall' { Invoke-Uninstall }
-    'Preflight' { Invoke-Preflight }
+if (-not $LoadOnly) {
+    # Read-only actions must not create the install folder just to hold a log.
+    if (($Action -eq 'Status' -or $Action -eq 'Preflight') -and -not (Test-Path -LiteralPath $InstallRoot)) { $script:LogEnabled = $false }
+    Write-Log ("Action={0} Games={1} ActiveGame={2} InstallRoot={3} NonInteractive={4} Json={5} SkipPrerequisiteChecks={6}" -f `
+        $Action, (@($Games) -join ','), $ActiveGame, $InstallRoot, [bool]$NonInteractive, [bool]$Json, [bool]$SkipPrerequisiteChecks)
+    try {
+        switch ($Action) {
+            'Interactive' { Invoke-Interactive }
+            'Install' { Invoke-Install }
+            'Status' { Invoke-Status }
+            'Repair' { Invoke-Repair }
+            'Configure' { Invoke-Configure }
+            'CheckForUpdates' { Invoke-CheckForUpdates }
+            'Uninstall' { Invoke-Uninstall }
+            'Preflight' { Invoke-Preflight }
+        }
+    } catch {
+        Write-Log ("Failed: {0}" -f $_.Exception.Message) 'ERROR'
+        throw
+    }
+    Write-Log "Exit code $script:ExitCode"
+    if ($script:ExitCode -ne 0) { exit $script:ExitCode }
 }

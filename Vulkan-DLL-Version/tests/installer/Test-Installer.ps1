@@ -23,7 +23,7 @@ function Invoke-Setup([string]$Script, [string[]]$Arguments, [int]$ExpectedExit 
     $oldPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $output = & powershell.exe -NoProfile -File $Script @Arguments 2>&1 | Out-String
+        $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script @Arguments 2>&1 | Out-String
         $exitCode = $LASTEXITCODE
     } finally { $ErrorActionPreference = $oldPreference }
     if ($exitCode -ne $ExpectedExit) { throw "Setup exit $exitCode, expected $ExpectedExit`n$output" }
@@ -140,6 +140,27 @@ try {
     Assert-True ($LASTEXITCODE -eq 0 -and $batchOutput -match '"games"') 'batch entrypoint launches setup and forwards arguments'
     $exeOutput = & $exe.FullName @preflightArgs 2>&1 | Out-String
     Assert-True ($LASTEXITCODE -eq 0 -and $exeOutput -match '"games"') 'EXE bootstrapper extracts and launches setup'
+    Assert-True (-not (Test-Path -LiteralPath $InstallRoot)) 'preflight does not create the install root'
+
+    $probe = Join-Path $RunRoot 'loadonly-probe.ps1'
+    $loadRoot = Join-Path $RunRoot 'LoadOnlyLocalAppData\RandOverlay'
+    @'
+param([string]$Setup, [string]$Root, [string]$Registry)
+. $Setup -LoadOnly -InstallRoot $Root -RegistryPath $Registry
+"FUNCTIONS=$([bool](Get-Command Get-PrerequisiteStatus -ErrorAction SilentlyContinue))"
+"CMP=$(Compare-ReleaseVersion '0.2.0-rc1' '0.1.0'),$(Compare-ReleaseVersion '0.2.0-rc1' '0.2.0'),$(Compare-ReleaseVersion 'v0.2.1-beta' '0.2.1-alpha'),$(Compare-ReleaseVersion '0.0.42-19909-677e13da' '0.0.42-19908-abcdef00'),$(Compare-ReleaseVersion '0.1.0' '0.1.0')"
+'@ | Set-Content -LiteralPath $probe -Encoding ASCII
+    $probeOutput = Invoke-Setup $probe @('-Setup',$setup,'-Root',$loadRoot,'-Registry',$RegistryPath)
+    Assert-True ($probeOutput -match 'FUNCTIONS=True' -and -not (Test-Path -LiteralPath $loadRoot)) 'LoadOnly exposes engine functions without running an action'
+    Assert-True ($probeOutput -match 'CMP=1,-1,1,1,0') 'release version comparison handles prerelease and rolling-build tags'
+
+    $pendingRoot = Join-Path $RunRoot 'PendingLocalAppData\RandOverlay'
+    $emptyArch = Join-Path $RunRoot 'EmptyArchipelago'
+    New-Item -ItemType Directory -Path $emptyArch -Force | Out-Null
+    Invoke-Setup $setup @('-Action','Install','-Games','RAC1','-InstallRoot',$pendingRoot,'-RegistryPath',$RegistryPath,'-ArchipelagoRoot',$emptyArch,'-RPCS3Path',$fakeRpcs3,'-VulkanLoaderPath',$fakeVulkan,'-NonInteractive') 2 | Out-Null
+    $pendingState = Get-Content -LiteralPath (Join-Path $pendingRoot 'setup-state.json') -Raw | ConvertFrom-Json
+    Assert-True ($pendingState.status -eq 'pending-prerequisites' -and @(Get-RegistryNames).Count -eq 0) 'non-interactive install with missing prerequisites exits 2 and registers nothing'
+    Invoke-Setup (Join-Path $pendingRoot 'Setup-RandOverlay.ps1') @('-Action','Uninstall','-InstallRoot',$pendingRoot,'-RegistryPath',$RegistryPath,'-NonInteractive') | Out-Null
 
     Invoke-Setup $setup @('-Action','Install','-Games','RAC1','-ActiveGame','RAC1','-InstallRoot',$InstallRoot,'-RegistryPath',$RegistryPath,'-ArchipelagoRoot',$fakeArch,'-RPCS3Path',$fakeRpcs3,'-SkipPrerequisiteChecks','-NonInteractive') | Out-Null
     $state = Get-Content -LiteralPath (Join-Path $InstallRoot 'setup-state.json') -Raw | ConvertFrom-Json
@@ -147,6 +168,13 @@ try {
     Assert-True ($state.dependencyPaths.archipelagoRoot -eq $fakeArch -and $state.dependencyPaths.rpcs3Path -eq $fakeRpcs3) 'portable dependency paths persist for repair'
     Assert-True (Test-Path -LiteralPath (Join-Path $InstallRoot 'current\RandOverlay_layer.dll')) 'layer DLL installed'
     Assert-True (@(Get-RegistryNames).Count -eq 1) 'one canonical Vulkan registration created'
+    Invoke-Setup (Join-Path $InstallRoot 'Setup-RandOverlay.ps1') @('-Action','Configure','-Games','RAC1,RAC2','-InstallRoot',$InstallRoot,'-RegistryPath',$RegistryPath,'-ArchipelagoRoot',$emptyArch,'-RPCS3Path',$fakeRpcs3,'-PCSX2Path',$fakePcsx2,'-VulkanLoaderPath',$fakeVulkan) 2 | Out-Null
+    $unchanged = Get-Content -LiteralPath (Join-Path $InstallRoot 'setup-state.json') -Raw | ConvertFrom-Json
+    Assert-True (@($unchanged.enabledGames).Count -eq 1) 'configure with missing prerequisites exits 2 and leaves the selection unchanged'
+    $logFiles = @(Get-ChildItem -LiteralPath (Join-Path $InstallRoot 'logs') -Filter 'setup-*.log' -File)
+    $logText = ($logFiles | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join "`n"
+    Assert-True ($logFiles.Count -ge 1 -and $logText -match 'Action=Install' -and $logText -match 'Exit code 2') 'setup writes a local log under the install root'
+    Assert-True (-not ($logText -match [regex]::Escape($env:USERPROFILE))) 'setup log redacts the user profile path'
 
     $unrelated = Join-Path $RunRoot 'unrelated\OtherLayer.json'
     $stale = Join-Path $RunRoot 'stale\RandOverlay_layer.json'

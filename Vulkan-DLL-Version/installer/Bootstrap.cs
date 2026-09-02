@@ -44,7 +44,7 @@ internal static class RandOverlayBootstrap
             var setup = Directory.GetFiles(expanded, "Setup-RandOverlay.ps1", SearchOption.AllDirectories).FirstOrDefault();
             if (setup == null) throw new InvalidOperationException("Setup-RandOverlay.ps1 is missing from the release payload.");
 
-            var argumentLine = "-NoProfile -File " + Quote(setup);
+            var argumentLine = "-NoProfile -ExecutionPolicy Bypass -File " + Quote(setup);
             if (args.Length > 0) argumentLine += " " + String.Join(" ", args.Select(Quote));
             var process = Process.Start(new ProcessStartInfo
             {
