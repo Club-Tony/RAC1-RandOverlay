@@ -31,6 +31,12 @@ The default is RAC1/RPCS3. Game selection controls prerequisites, not the DLL. S
 installed under `%LOCALAPPDATA%\RandOverlay` and exactly one RandOverlay-owned manifest is
 registered per user.
 
+Every action appends a local, profile-path-redacted log under `%LOCALAPPDATA%\RandOverlay\logs`
+(newest five kept; Status and Preflight log only once an install exists, and Uninstall removes
+the folder). Exit codes: `0` success, `1` error, `2` missing prerequisites, `9` bootstrapper
+payload failure. `-LoadOnly` dot-sources the engine's functions without running an action, which
+is how a front-end or test can call `Get-PrerequisiteStatus` or `Compare-ReleaseVersion` directly.
+
 ## Tests
 
 ```powershell
