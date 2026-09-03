@@ -135,6 +135,9 @@ New-Item -ItemType Directory -Path $payload -Force | Out-Null
 
 Copy-Item -LiteralPath $LayerDll -Destination (Join-Path $payload 'RandOverlay_layer.dll')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'RandOverlay.ini') -Destination (Join-Path $payload 'RandOverlay.ini')
+$manifestSource = Join-Path $InstallerRoot 'stack-manifest.json'
+$null = Get-Content -LiteralPath $manifestSource -Raw | ConvertFrom-Json   # fail fast on malformed JSON
+Copy-Item -LiteralPath $manifestSource -Destination (Join-Path $payload 'stack-manifest.json')
 Copy-Item -LiteralPath (Join-Path $InstallerRoot 'Setup-RandOverlay.ps1') -Destination (Join-Path $packageRoot 'Setup-RandOverlay.ps1')
 Copy-Item -LiteralPath (Join-Path $InstallerRoot 'Install-RandOverlay.bat') -Destination (Join-Path $packageRoot 'Install-RandOverlay.bat')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'LICENSE') -Destination (Join-Path $packageRoot 'LICENSE.txt')
@@ -157,7 +160,7 @@ $manifest = [ordered]@{
 }
 Write-Json (Join-Path $payload 'RandOverlay_layer.json') $manifest
 
-$trackedFiles = @('RandOverlay_layer.dll','RandOverlay_layer.json','RandOverlay.ini')
+$trackedFiles = @('RandOverlay_layer.dll','RandOverlay_layer.json','RandOverlay.ini','stack-manifest.json')
 $fileRecords = foreach ($name in $trackedFiles) {
     [ordered]@{ path=$name; sha256=(Get-Sha (Join-Path $payload $name)) }
 }
@@ -198,6 +201,9 @@ $zipPath = Join-Path $OutputRoot "$packageName.zip"
 New-DeterministicZip $work $zipPath
 $outputs = [System.Collections.Generic.List[string]]::new()
 $outputs.Add($zipPath)
+$manifestAsset = Join-Path $OutputRoot 'stack-manifest.json'
+Copy-Item -LiteralPath $manifestSource -Destination $manifestAsset -Force
+$outputs.Add($manifestAsset)
 
 if ($Format -contains 'Bat') {
     $batPath = Join-Path $OutputRoot "RandOverlay-Setup-v$Version.bat"

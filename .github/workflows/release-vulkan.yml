@@ -74,6 +74,7 @@ jobs:
             Vulkan-DLL-Version/dist/*.bat
             Vulkan-DLL-Version/dist/*.exe
             Vulkan-DLL-Version/dist/SHA256SUMS.txt
+            Vulkan-DLL-Version/dist/stack-manifest.json
 
       - name: Publish GitHub Release assets
         if: github.ref_type == 'tag'
@@ -82,4 +83,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $notes = "Unsigned bootstrap release. The self-contained BAT is the primary artifact: it embeds, verifies, and automatically installs the same release ZIP. Windows may show an Unknown Publisher or SmartScreen reputation warning."
-          gh release create $env:GITHUB_REF_NAME .\Vulkan-DLL-Version\dist\*.bat .\Vulkan-DLL-Version\dist\*.zip .\Vulkan-DLL-Version\dist\*.exe .\Vulkan-DLL-Version\dist\SHA256SUMS.txt --title "RandOverlay $env:GITHUB_REF_NAME" --notes $notes
+          gh release create $env:GITHUB_REF_NAME .\Vulkan-DLL-Version\dist\*.bat .\Vulkan-DLL-Version\dist\*.zip .\Vulkan-DLL-Version\dist\*.exe .\Vulkan-DLL-Version\dist\SHA256SUMS.txt .\Vulkan-DLL-Version\dist\stack-manifest.json --title "RandOverlay $env:GITHUB_REF_NAME" --notes $notes

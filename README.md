@@ -53,6 +53,12 @@ Recheck/Save-and-exit. Multi-game selections are stored as `EnabledPresets`; no 
 game choice is required. RPCS3 resolves RAC1 directly, while PCSX2 uses the running game or
 Archipelago client window title to distinguish RAC2 from RAC3 and pauses rather than guessing.
 
+For RAC1, Status and Preflight also check the wider Archipelago stack: the Archipelago version,
+which pinned release of the RAC1 apworld is installed, and whether RPCS3 has firmware, the game,
+the multiplayer PKG and networking enabled. Setup can install or adopt the apworld from a
+pinned, checksummed manifest (with backup and rollback); it never bundles or downloads anything
+else, and firmware and game files always come from you.
+
 Until trusted signing is active, Windows may show an Unknown Publisher or SmartScreen
 reputation warning. This can occur because the project is unsigned or has not established
 reputation; it is not described as a guaranteed false positive. Proceed only with an

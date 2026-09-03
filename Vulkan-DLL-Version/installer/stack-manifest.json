@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "manifestVersion": "2026.09.02",
+  "generatedAt": "2026-09-02T00:00:00Z",
+  "originAllowlist": [
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com"
+  ],
+  "components": {
+    "archipelago": {
+      "displayName": "Archipelago Launcher",
+      "kind": "detect-only",
+      "required": true,
+      "origin": "https://github.com/ArchipelagoMW/Archipelago/releases",
+      "compatible": { "min": "0.6.5", "maxExclusive": "0.7.0", "tested": ["0.6.7"] }
+    },
+    "rac1-apworld": {
+      "displayName": "Ratchet & Clank 1 APWorld",
+      "kind": "managed-file",
+      "required": true,
+      "origin": "https://github.com/Panda291/Archipelago/releases",
+      "fileName": "rac1.apworld",
+      "versions": [
+        {
+          "version": "0.2.1-beta",
+          "tag": "v0.2.1b",
+          "status": "untested",
+          "url": "https://github.com/Panda291/Archipelago/releases/download/v0.2.1b/rac1.apworld",
+          "sha256": "590c78c745db101edb15856cb6410647a7e11932c5a02bdc2f7193a77cd61a02",
+          "size": 45367,
+          "revoked": false,
+          "revokedReason": null,
+          "note": "Newest prerelease (2026-06-25). Not yet verified end to end with the overlay."
+        },
+        {
+          "version": "0.2.0-beta",
+          "tag": "v0.2b",
+          "status": "tested",
+          "url": "https://github.com/Panda291/Archipelago/releases/download/v0.2b/RAC1.apworld",
+          "sha256": "c1e16c07396046f16f903a87afe097eeb50c50015b033b587988524724b08801",
+          "size": 32815,
+          "revoked": false,
+          "revokedReason": null,
+          "note": "In use on the maintainer's machine with Archipelago 0.6.7; the overlay's client-component contract was verified against it."
+        },
+        {
+          "version": "0.1.3",
+          "tag": "v0.1.3",
+          "status": "untested",
+          "url": "https://github.com/Panda291/Archipelago/releases/download/v0.1.3/rac1.apworld",
+          "sha256": "242cbbf02e8add49ef2e8249f72f4c38b8a39e37010fdebebba7cb9ad7f1ead0",
+          "size": 33753,
+          "revoked": false,
+          "revokedReason": null,
+          "note": "What GitHub's /releases/latest still resolves to; superseded by the 0.2 prereleases."
+        }
+      ]
+    },
+    "rpcs3": {
+      "displayName": "RPCS3",
+      "kind": "detect-only",
+      "required": true,
+      "origin": "https://rpcs3.net/download",
+      "minVersion": "0.0.27",
+      "knownBad": [],
+      "gameTitleId": "NPEA00385",
+      "modTitleId": "BORD00001"
+    },
+    "rac1-multiplayer": {
+      "displayName": "Ratchet & Clank Multiplayer Client (PKG)",
+      "kind": "detect-only",
+      "required": true,
+      "origin": "https://github.com/bordplate/rac1-multiplayer/releases"
+    },
+    "lawrence": {
+      "displayName": "Lawrence server (self-hosting only)",
+      "kind": "detect-only",
+      "required": false,
+      "redistributable": false,
+      "origin": "https://github.com/bordplate/Lawrence/releases"
+    },
+    "poptracker": {
+      "displayName": "PopTracker (optional tracker)",
+      "kind": "detect-only",
+      "required": false,
+      "origin": "https://github.com/black-sliver/PopTracker/releases"
+    }
+  }
+}
