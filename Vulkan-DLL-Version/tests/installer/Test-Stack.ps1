@@ -86,6 +86,34 @@ try {
     $shaB = Get-Sha (Join-Path $fixtures 'B.apworld')
     $shaC = Get-Sha (Join-Path $fixtures 'C.apworld')
     $shaD = Get-Sha (Join-Path $fixtures 'D.apworld')
+
+    # --- PopTracker archives and a multiplayer PKG fixture -------------------------------------
+    function New-PopTrackerZip([string]$ZipPath, [string]$Version) {
+        $stage = Join-Path $RunRoot ('popstage-' + $Version.Replace('.', '_'))
+        if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+        New-Item -ItemType Directory -Path (Join-Path $stage 'poptracker\packs') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $stage 'poptracker\assets') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $stage 'poptracker\poptracker.exe') -Value "poptracker $Version" -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $stage 'poptracker\CHANGELOG.md') -Value "changelog $Version" -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $stage 'poptracker\assets\logo.txt') -Value "asset $Version" -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $stage 'poptracker\packs\README.txt') -Value 'shipped packs placeholder' -Encoding ASCII
+        Compress-Archive -Path (Join-Path $stage 'poptracker') -DestinationPath $ZipPath -Force
+    }
+    $popZipOld = Join-Path $fixtures 'poptracker-old.zip'
+    $popZipNew = Join-Path $fixtures 'poptracker-new.zip'
+    New-PopTrackerZip $popZipOld '0.35.4'
+    New-PopTrackerZip $popZipNew '0.36.0'
+    $shaPopOld = Get-Sha $popZipOld; $sizePopOld = (Get-Item -LiteralPath $popZipOld).Length
+    $shaPopNew = Get-Sha $popZipNew; $sizePopNew = (Get-Item -LiteralPath $popZipNew).Length
+    $popBadZip = Join-Path $fixtures 'poptracker-noexe.zip'
+    $badStage = Join-Path $RunRoot 'popstage-noexe'
+    New-Item -ItemType Directory -Path (Join-Path $badStage 'poptracker') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $badStage 'poptracker\readme.txt') -Value 'no executable here' -Encoding ASCII
+    Compress-Archive -Path (Join-Path $badStage 'poptracker') -DestinationPath $popBadZip -Force
+    $shaPopBad = Get-Sha $popBadZip; $sizePopBad = (Get-Item -LiteralPath $popBadZip).Length
+    $fixturePkg = Join-Path $fixtures 'multiplayer.pkg'
+    Write-Bytes $fixturePkg 11 8192
+    $shaPkg = Get-Sha $fixturePkg; $sizePkg = (Get-Item -LiteralPath $fixturePkg).Length
     $manifestPath = Join-Path $RunRoot 'test-manifest.json'
     $manifest = [ordered]@{
         schemaVersion = 1; manifestVersion = 'test'; generatedAt = '2026-09-02T00:00:00Z'
@@ -101,6 +129,14 @@ try {
                 [ordered]@{ version='0.5.0'; tag='vBadSize'; status='untested'; url=(Get-FileUri (Join-Path $fixtures 'A.apworld')); sha256=$shaA; size=4101; revoked=$false; revokedReason=$null }
             ) }
             rpcs3 = [ordered]@{ displayName='RPCS3'; kind='detect-only'; required=$true; origin='https://rpcs3.net/download'; minVersion='0.0.27'; knownBad=@('0.0.20'); gameTitleId='NPEA00385'; modTitleId='BORD00001' }
+            'rac1-multiplayer' = [ordered]@{ displayName='Ratchet & Clank Multiplayer Client (PKG)'; kind='managed-file'; required=$true; origin='https://github.com/bordplate/rac1-multiplayer/releases'; license='AGPL-3.0'; fileName='BDUPS3-BORD00001_00-0000000000000000.pkg'; placement='staged'; installRelative='stack\downloads'; titleId='BORD00001'; handoffNote='RPCS3 installs the PKG; this tool only downloads and verifies it.'; versions=@(
+                [ordered]@{ version='0.0.1-115'; tag='vPkg'; status='untested'; url=(Get-FileUri $fixturePkg); sha256=$shaPkg; size=$sizePkg; revoked=$false; revokedReason=$null }
+            ) }
+            poptracker = [ordered]@{ displayName='PopTracker (optional tracker)'; kind='managed-archive'; required=$false; origin='https://github.com/black-sliver/PopTracker/releases'; license='GPL-3.0'; installRelative='stack\PopTracker'; executable='poptracker.exe'; portableMarker='portable.txt'; archiveRoot='poptracker'; preserveRelative=@('packs','saves','settings.json'); packsNote='No Ratchet & Clank tracker pack ships with this tool.'; packsUrl='https://github.com/SomeLazyGamer/RaC-AP-Poptracker'; versions=@(
+                [ordered]@{ version='0.35.4'; tag='vPopOld'; status='untested'; url=(Get-FileUri $popZipOld); sha256=$shaPopOld; size=$sizePopOld; revoked=$false; revokedReason=$null },
+                [ordered]@{ version='0.36.0'; tag='vPopNew'; status='untested'; url=(Get-FileUri $popZipNew); sha256=$shaPopNew; size=$sizePopNew; revoked=$false; revokedReason=$null },
+                [ordered]@{ version='0.37.0'; tag='vPopBad'; status='untested'; url=(Get-FileUri $popBadZip); sha256=$shaPopBad; size=$sizePopBad; revoked=$false; revokedReason=$null }
+            ) }
         }
     }
     $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
@@ -220,6 +256,151 @@ try {
     Invoke-Setup $installed (@('-Action','InstallStackComponent','-Component','rac1-apworld','-NonInteractive','-ReplaceExisting') + $common) | Out-Null
     Invoke-Setup $installed (@('-Action','Uninstall','-NonInteractive','-RemoveManagedStack') + $common) | Out-Null
     Assert-True (-not (Test-Path -LiteralPath $target) -and (Test-Path -LiteralPath (Join-Path $fakeArch 'custom_worlds\other.apworld'))) '-RemoveManagedStack removes only the apworld Setup placed'
+
+    # --- A fresh overlay install for the Phase 3 actions ---------------------------------------
+    Invoke-Setup $setup (@('-Action','Install','-Games','RAC1','-SkipPrerequisiteChecks','-NonInteractive') + $common) | Out-Null
+
+    # --- Manifest validation rejects a malformed managed-archive before any download -----------
+    function Test-BrokenManifest([string]$Name, [scriptblock]$Mutate, [string]$Expected, [string]$Message) {
+        $copy = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        & $Mutate $copy
+        $brokenPath = Join-Path $RunRoot $Name
+        $copy | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $brokenPath -Encoding UTF8
+        $brokenArgs = @($common | ForEach-Object { if ($_ -eq $manifestPath) { $brokenPath } else { $_ } })
+        $output = Invoke-Setup $installed (@('-Action','InstallStackComponent','-Component','poptracker','-NonInteractive','-AllowUntested') + $brokenArgs) 1
+        Assert-True ($output -match $Expected) $Message
+    }
+    Test-BrokenManifest 'bad-archive-noexe.json' { param($m) $m.components.poptracker.PSObject.Properties.Remove('executable') } "no 'executable'" 'a managed-archive without an executable is rejected before any download'
+    Test-BrokenManifest 'bad-archive-noinstall.json' { param($m) $m.components.poptracker.PSObject.Properties.Remove('installRelative') } "no 'installRelative'" 'a managed-archive without installRelative is rejected'
+    Test-BrokenManifest 'bad-archive-escape.json' { param($m) $m.components.poptracker.installRelative = '..\..\escape' } 'unsafe installRelative' 'a managed-archive whose installRelative escapes the install root is rejected'
+    Test-BrokenManifest 'bad-archive-rooted.json' { param($m) $m.components.poptracker.installRelative = 'C:\Windows' } 'unsafe installRelative' 'a managed-archive with an absolute installRelative is rejected'
+    Test-BrokenManifest 'bad-archive-noversions.json' { param($m) $m.components.poptracker.versions = @() } 'has no versions' 'a managed component with no versions is rejected'
+    Test-BrokenManifest 'bad-archive-badhash.json' { param($m) $m.components.poptracker.versions[0].sha256 = 'not-a-hash' } 'invalid sha256' 'a managed-archive version with a malformed sha256 is rejected'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'stack\PopTracker'))) 'no managed-archive files were written while validating broken manifests'
+
+    # --- Multiplayer PKG is staged, never written into RPCS3 -----------------------------------
+    function Get-TreeFingerprint([string]$Root) {
+        @(Get-ChildItem -LiteralPath $Root -Recurse -File | Sort-Object FullName | ForEach-Object {
+            $_.FullName.Substring($Root.Length) + '=' + (Get-Sha $_.FullName)
+        }) -join '|'
+    }
+    $rpcs3Before = Get-TreeFingerprint $fakeRpcs3Dir
+    Invoke-Setup $installed (@('-Action','InstallStackComponent','-Component','rac1-multiplayer','-NonInteractive') + $common) 1 | Out-Null
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'stack\downloads\BDUPS3-BORD00001_00-0000000000000000.pkg'))) 'the untested multiplayer PKG is refused without -AllowUntested'
+    Invoke-Setup $installed (@('-Action','InstallStackComponent','-Component','rac1-multiplayer','-NonInteractive','-AllowUntested') + $common) | Out-Null
+    $pkgPath = Join-Path $InstallRoot 'stack\downloads\BDUPS3-BORD00001_00-0000000000000000.pkg'
+    Assert-True ((Test-Path -LiteralPath $pkgPath) -and (Get-Sha $pkgPath) -eq $shaPkg) 'the multiplayer PKG lands verified under stack\downloads'
+    Assert-True ((Get-TreeFingerprint $fakeRpcs3Dir) -eq $rpcs3Before) 'downloading the PKG leaves the RPCS3 folder byte-identical'
+    $pkgState = (Read-State).stack.'rac1-multiplayer'
+    Assert-True ($pkgState.version -eq '0.0.1-115' -and $pkgState.kind -eq 'managed-file') 'the staged PKG is recorded in setup-state.json'
+
+    # --- The PKG row reflects RPCS3, then the staged download ----------------------------------
+    $modFolder = Join-Path $fakeRpcs3Dir 'dev_hdd0\game\BORD00001'
+    $modBackup = Join-Path $RunRoot 'mod-backup'
+    Move-Item -LiteralPath $modFolder -Destination $modBackup
+    $status = Invoke-Setup $installed (@('-Action','Status','-Json') + $common) | ConvertFrom-Json
+    $pkgRow = Get-Row $status.stack 'rac1-multiplayer'
+    Assert-True ($pkgRow.Status -eq 'downloaded' -and -not $pkgRow.Ready -and $pkgRow.Detail -match 'Install Packages') 'the PKG row reports the verified download and the manual RPCS3 step'
+    Move-Item -LiteralPath $modBackup -Destination $modFolder
+    $status = Invoke-Setup $installed (@('-Action','Status','-Json') + $common) | ConvertFrom-Json
+    $pkgRow = Get-Row $status.stack 'rac1-multiplayer'
+    Assert-True ($pkgRow.Status -eq 'present' -and $pkgRow.Ready) 'the PKG row flips to present once RPCS3 holds the title folder'
+
+    # --- PopTracker managed portable copy ------------------------------------------------------
+    $popRoot = Join-Path $InstallRoot 'stack\PopTracker'
+    Invoke-Setup $installed (@('-Action','InstallStackComponent','-Component','poptracker','-NonInteractive') + $common) 1 | Out-Null
+    Assert-True (-not (Test-Path -LiteralPath $popRoot)) 'an untested PopTracker release is refused without -AllowUntested'
+    Invoke-Setup $installed (@('-Action','InstallStackComponent','-Component','poptracker','-ComponentVersion','0.35.4','-NonInteractive','-AllowUntested') + $common) | Out-Null
+    $popExe = Join-Path $popRoot 'poptracker.exe'
+    Assert-True ((Test-Path -LiteralPath $popExe) -and (Get-Content -LiteralPath $popExe -Raw) -match '0\.35\.4') 'PopTracker is expanded into stack\PopTracker without its archive root folder'
+    Assert-True (Test-Path -LiteralPath (Join-Path $popRoot 'portable.txt')) 'the portable marker is written beside poptracker.exe'
+    Assert-True ((Test-Path -LiteralPath (Join-Path $popRoot 'assets\logo.txt')) -and (Test-Path -LiteralPath (Join-Path $popRoot 'packs\README.txt'))) 'nested archive folders survive expansion'
+    Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $InstallRoot 'stack\downloads') -File | Where-Object { $_.Extension -eq '.zip' }).Count -eq 0) 'the downloaded archive is cleaned up after expansion'
+    $popState = (Read-State).stack.poptracker
+    Assert-True ($popState.version -eq '0.35.4' -and $popState.kind -eq 'managed-archive' -and -not $popState.adopted) 'the managed PopTracker copy is recorded as managed-archive'
+    $status = Invoke-Setup $installed (@('-Action','Status','-Json') + $common) | ConvertFrom-Json
+    $popRow = Get-Row $status.stack 'poptracker'
+    Assert-True ($popRow.Status -eq 'managed' -and $popRow.Ready -and $popRow.Version -eq '0.35.4' -and $popRow.Optional) 'the poptracker row prefers the managed copy and stays optional'
+
+    # --- Reinstalling the same version does nothing; upgrading keeps user packs ----------------
+    $userPack = Join-Path $popRoot 'packs\my-rac-pack.json'
+    Set-Content -LiteralPath $userPack -Value '{"pack":"mine"}' -Encoding ASCII
+    $exeStamp = (Get-Item -LiteralPath $popExe).LastWriteTimeUtc
+    Start-Sleep -Milliseconds 1100
+    Invoke-Setup $installed (@('-Action','InstallStackComponent','-Component','poptracker','-ComponentVersion','0.35.4','-NonInteractive','-AllowUntested') + $common) | Out-Null
+    Assert-True ((Get-Item -LiteralPath $popExe).LastWriteTimeUtc -eq $exeStamp) 'reinstalling the same PopTracker version rewrites nothing'
+    Invoke-Setup $installed (@('-Action','InstallStackComponent','-Component','poptracker','-ComponentVersion','0.36.0','-NonInteractive','-AllowUntested') + $common) 3 | Out-Null
+    Assert-True ((Get-Content -LiteralPath $popExe -Raw) -match '0\.35\.4') 'upgrading over an existing managed copy needs -ReplaceExisting (exit 3)'
+    Invoke-Setup $installed (@('-Action','InstallStackComponent','-Component','poptracker','-ComponentVersion','0.36.0','-NonInteractive','-AllowUntested','-ReplaceExisting') + $common) | Out-Null
+    Assert-True ((Get-Content -LiteralPath $popExe -Raw) -match '0\.36\.0' -and (Test-Path -LiteralPath $userPack)) 'upgrading replaces the application files and keeps user packs'
+
+    # --- A broken archive leaves the existing copy alone ---------------------------------------
+    Invoke-Setup $installed (@('-Action','InstallStackComponent','-Component','poptracker','-ComponentVersion','0.37.0','-NonInteractive','-AllowUntested','-ReplaceExisting') + $common) 1 | Out-Null
+    Assert-True ((Read-State).stack.poptracker.version -eq '0.36.0') 'an archive without the expected executable is refused and the record is unchanged'
+
+    # --- A user-installed PopTracker is reported but never managed -----------------------------
+    $userPopDir = Join-Path $RunRoot 'UserPopTracker'
+    New-Item -ItemType Directory -Path $userPopDir -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $userPopDir 'poptracker.exe') -Value 'user copy' -Encoding ASCII
+
+    # --- Lawrence is detected from a user-supplied path only -----------------------------------
+    $fakeLawrence = Join-Path $RunRoot 'Lawrence\Lawrence.exe'
+    New-Item -ItemType Directory -Path (Split-Path $fakeLawrence -Parent) -Force | Out-Null
+    Set-Content -LiteralPath $fakeLawrence -Value 'fixture lawrence' -Encoding ASCII
+    $status = Invoke-Setup $installed (@('-Action','Status','-Json','-LawrencePath',$fakeLawrence) + $common) | ConvertFrom-Json
+    $lawrenceRow = Get-Row $status.stack 'lawrence'
+    Assert-True ($lawrenceRow.Status -eq 'detected' -and $lawrenceRow.Optional -and $lawrenceRow.Detail -match 'Launch menu') 'a user-supplied Lawrence build is detected and stays optional'
+    $status = Invoke-Setup $installed (@('-Action','Status','-Json') + $common) | ConvertFrom-Json
+    Assert-True ((Get-Row $status.stack 'lawrence').Status -eq 'not running') 'Lawrence is never assumed present without a supplied path'
+
+    # --- Launch is interactive only ------------------------------------------------------------
+    Invoke-Setup $installed (@('-Action','Launch','-NonInteractive') + $common) 1 | Out-Null
+    Assert-True $true 'Launch refuses to run under -NonInteractive'
+
+    # --- Opt-in RPCS3 network fix --------------------------------------------------------------
+    $configPath = Join-Path $fakeRpcs3Dir 'config\config.yml'
+    $configBefore = @(Get-Content -LiteralPath $configPath)
+    $configShaBefore = Get-Sha $configPath
+    Invoke-Setup $installed (@('-Action','ConfigureRpcs3Network','-NonInteractive') + $common) | Out-Null
+    $configAfter = @(Get-Content -LiteralPath $configPath)
+    $changed = @(0..($configBefore.Count - 1) | Where-Object { $configBefore[$_] -ne $configAfter[$_] })
+    Assert-True ($configBefore.Count -eq $configAfter.Count -and $changed.Count -eq 1 -and $configAfter[$changed[0]] -match 'Internet enabled:\s*Connected$') 'ConfigureRpcs3Network changes only the Internet enabled line'
+    Assert-True (($configAfter -join "`n") -match 'PSN status:\s*Disconnected') 'PSN status is left untouched'
+    $backup = @(Get-ChildItem -LiteralPath (Join-Path $InstallRoot 'stack\rollback') -File -Filter 'rpcs3-config.yml.*')
+    Assert-True ($backup.Count -eq 1 -and (Get-Sha $backup[0].FullName) -eq $configShaBefore) 'the config backup is written and matches the original bytes'
+    $status = Invoke-Setup $installed (@('-Action','Status','-Json') + $common) | ConvertFrom-Json
+    Assert-True ((Get-Row $status.stack 'rpcs3-network').Ready) 'the network row reports Connected after the fix'
+    Invoke-Setup $installed (@('-Action','ConfigureRpcs3Network','-NonInteractive') + $common) | Out-Null
+    Assert-True ((Get-Sha $configPath) -ne $configShaBefore) 'rerunning the network fix when already Connected changes nothing'
+
+    # --- Rollback restores the original configuration bytes ------------------------------------
+    Invoke-Setup $installed (@('-Action','StackRollback','-Component','rpcs3-network') + $common) | Out-Null
+    Assert-True ((Get-Sha $configPath) -eq $configShaBefore) 'StackRollback restores the original config.yml bytes'
+
+    # --- The fix refuses to run while RPCS3 is running -----------------------------------------
+    $fakeProcDir = Join-Path $RunRoot 'fakeproc'
+    New-Item -ItemType Directory -Path $fakeProcDir -Force | Out-Null
+    $fakeProcExe = Join-Path $fakeProcDir 'rpcs3.exe'
+    Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\cmd.exe') -Destination $fakeProcExe
+    $runningShaBefore = Get-Sha $configPath
+    $fakeProcess = Start-Process -FilePath $fakeProcExe -ArgumentList '/c','ping -n 30 127.0.0.1 >nul' -WindowStyle Hidden -PassThru
+    try {
+        Invoke-Setup $installed (@('-Action','ConfigureRpcs3Network','-NonInteractive') + $common) 1 | Out-Null
+        Assert-True ((Get-Sha $configPath) -eq $runningShaBefore) 'ConfigureRpcs3Network refuses while a process named rpcs3 is running'
+    } finally {
+        Stop-Process -Id $fakeProcess.Id -Force -ErrorAction SilentlyContinue
+        $fakeProcess.WaitForExit(10000) | Out-Null
+    }
+
+    # --- Uninstall keeps tracker content unless -RemoveTrackerData -----------------------------
+    Invoke-Setup $installed (@('-Action','Uninstall','-NonInteractive') + $common) | Out-Null
+    Assert-True ((Test-Path -LiteralPath $userPack) -and -not (Test-Path -LiteralPath $popExe)) 'uninstall removes the PopTracker application files and keeps the packs folder'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'current')) -and -not (Test-Path -LiteralPath (Join-Path $InstallRoot 'setup-state.json'))) 'uninstall still removes everything the tool owns'
+    Invoke-Setup $setup (@('-Action','Install','-Games','RAC1','-SkipPrerequisiteChecks','-NonInteractive') + $common) | Out-Null
+    Invoke-Setup $installed (@('-Action','InstallStackComponent','-Component','poptracker','-ComponentVersion','0.35.4','-NonInteractive','-AllowUntested','-ReplaceExisting') + $common) | Out-Null
+    Assert-True (Test-Path -LiteralPath $userPack) 'reinstalling PopTracker over kept packs preserves them'
+    Invoke-Setup $installed (@('-Action','Uninstall','-NonInteractive','-RemoveTrackerData') + $common) | Out-Null
+    Assert-True (-not (Test-Path -LiteralPath $popRoot) -and -not (Test-Path -LiteralPath $InstallRoot)) '-RemoveTrackerData removes the packs folder and the install root'
 }
 finally {
     [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($TestHiveRelative, $false)

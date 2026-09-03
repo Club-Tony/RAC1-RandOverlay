@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "manifestVersion": "2026.09.02",
+  "manifestVersion": "2026.09.03",
   "generatedAt": "2026-09-02T00:00:00Z",
   "originAllowlist": [
     "github.com",
@@ -69,9 +69,28 @@
     },
     "rac1-multiplayer": {
       "displayName": "Ratchet & Clank Multiplayer Client (PKG)",
-      "kind": "detect-only",
+      "kind": "managed-file",
       "required": true,
-      "origin": "https://github.com/bordplate/rac1-multiplayer/releases"
+      "origin": "https://github.com/bordplate/rac1-multiplayer/releases",
+      "license": "AGPL-3.0",
+      "fileName": "BDUPS3-BORD00001_00-0000000000000000.pkg",
+      "placement": "staged",
+      "installRelative": "stack\\downloads",
+      "titleId": "BORD00001",
+      "handoffNote": "RPCS3 installs the PKG. This tool downloads and verifies it, then points you at File > Install Packages/Raps/Edats; it never writes into dev_hdd0.",
+      "versions": [
+        {
+          "version": "0.0.1-115",
+          "tag": "v0.0.1-115+26936030531-alpha",
+          "status": "untested",
+          "url": "https://github.com/bordplate/rac1-multiplayer/releases/download/v0.0.1-115%2B26936030531-alpha/BDUPS3-BORD00001_00-0000000000000000.pkg",
+          "sha256": "e0bd0d58f94c3ba55de4e199ac71b2ab979107532b8f37ae6c330e0907c1b170",
+          "size": 4820528,
+          "revoked": false,
+          "revokedReason": null,
+          "note": "Latest alpha (2026-06-04). Downloaded and hash-checked here, but not yet installed through RPCS3 and played end to end, so it stays untested."
+        }
+      ]
     },
     "lawrence": {
       "displayName": "Lawrence server (self-hosting only)",
@@ -82,9 +101,30 @@
     },
     "poptracker": {
       "displayName": "PopTracker (optional tracker)",
-      "kind": "detect-only",
+      "kind": "managed-archive",
       "required": false,
-      "origin": "https://github.com/black-sliver/PopTracker/releases"
+      "origin": "https://github.com/black-sliver/PopTracker/releases",
+      "license": "GPL-3.0",
+      "installRelative": "stack\\PopTracker",
+      "executable": "poptracker.exe",
+      "portableMarker": "portable.txt",
+      "archiveRoot": "poptracker",
+      "preserveRelative": [ "packs", "saves", "settings.json" ],
+      "packsNote": "No Ratchet & Clank tracker pack ships with this tool: neither published RAC pack states a license. Download a pack yourself into the packs folder.",
+      "packsUrl": "https://github.com/SomeLazyGamer/RaC-AP-Poptracker",
+      "versions": [
+        {
+          "version": "0.35.4",
+          "tag": "v0.35.4",
+          "status": "untested",
+          "url": "https://github.com/black-sliver/PopTracker/releases/download/v0.35.4/poptracker_0-35-4_win64.zip",
+          "sha256": "3c0f6220e83d4b79e044b5c8eb4602ed517c9734c7e9507c1eb7687021442d1c",
+          "size": 7268118,
+          "revoked": false,
+          "revokedReason": null,
+          "note": "Latest Windows x64 release (2026-08-12). PopTracker publishes minisign signatures rather than SHA-256, so this hash was measured from the downloaded asset."
+        }
+      ]
     }
   }
 }

@@ -141,6 +141,9 @@ Invoke-Check "PowerShell parser" {
     foreach ($relativePath in @(
         "PS+WPF-Version\RandOverlay.ps1",
         "Vulkan-DLL-Version\installer\Setup-RandOverlay.ps1",
+        "Vulkan-DLL-Version\installer\lib\StackManifest.ps1",
+        "Vulkan-DLL-Version\installer\lib\StackDetect.ps1",
+        "Vulkan-DLL-Version\installer\lib\StackActions.ps1",
         "Vulkan-DLL-Version\installer\Build-RandOverlayRelease.ps1",
         "Vulkan-DLL-Version\tests\installer\Test-Installer.ps1",
         "Vulkan-DLL-Version\tests\installer\TestCommon.ps1",
