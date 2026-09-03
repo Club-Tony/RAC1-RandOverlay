@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Install','Status','Repair','Configure','CheckForUpdates','Uninstall','Preflight','InstallStackComponent','StackRollback','RefreshManifest')]
+    [ValidateSet('Interactive','Install','Status','Repair','Configure','CheckForUpdates','Uninstall','Preflight','InstallStackComponent','StackRollback','RefreshManifest','ConfigureRpcs3Network','Launch')]
     [string]$Action = 'Interactive',
     [string[]]$Games,
     [ValidateSet('RAC1','RAC2','RAC3')][string]$ActiveGame,
@@ -10,6 +10,7 @@ param(
     [string]$ArchipelagoRoot,
     [string]$RPCS3Path,
     [string]$PCSX2Path,
+    [string]$LawrencePath,
     [string]$VulkanLoaderPath,
     [switch]$SkipPrerequisiteChecks,
     [switch]$NonInteractive,
@@ -26,7 +27,10 @@ param(
     [switch]$AllowUntested,
     [switch]$ReplaceExisting,
     [switch]$AllowLocalOrigins,
-    [switch]$RemoveManagedStack
+    [switch]$RemoveManagedStack,
+    [switch]$RemoveTrackerData,
+    [ValidateSet('Connected','Disconnected')][string]$NetworkStatus,
+    [ValidateSet('archipelago','rpcs3','poptracker','lawrence')][string]$Target
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,7 +40,8 @@ Set-StrictMode -Version 2.0
 #   0  success (including an interactive "Save and exit")
 #   1  unhandled error
 #   2  required prerequisites are missing
-#   3  an action needs explicit confirmation (InstallStackComponent over an unknown file without -ReplaceExisting)
+#   3  an action needs explicit confirmation (InstallStackComponent over an unknown file or an
+#      existing managed copy without -ReplaceExisting)
 #   9  bootstrapper payload failure (set by the BAT/EXE wrappers, never here)
 # -LoadOnly defines every function and script variable without running an
 # action, so a front-end or test can dot-source this file:
@@ -175,6 +180,8 @@ $InstallRoot = Assert-SafeRoot $InstallRoot
 $script:StatePath = Join-Path $InstallRoot 'setup-state.json'
 $script:ConfigPath = Join-Path $InstallRoot 'RandOverlay.ini'
 $script:InstalledSetupPath = Join-Path $InstallRoot 'Setup-RandOverlay.ps1'
+$script:SetupLibRoot = Join-Path $PSScriptRoot 'lib'
+$script:InstalledLibRoot = Join-Path $InstallRoot 'lib'
 $script:CurrentRoot = Join-Path $InstallRoot 'current'
 $script:CachedPayloadRoot = Join-Path $InstallRoot 'package\payload'
 $script:RollbackRoot = Join-Path $InstallRoot 'rollback\previous'
@@ -211,10 +218,12 @@ function Get-DependencyPaths {
     $savedArch = Get-OptionalProperty $saved 'archipelagoRoot'
     $savedRpcs3 = Get-OptionalProperty $saved 'rpcs3Path'
     $savedPcsx2 = Get-OptionalProperty $saved 'pcsx2Path'
+    $savedLawrence = Get-OptionalProperty $saved 'lawrencePath'
     [ordered]@{
         archipelagoRoot = if ($ArchipelagoRoot) { $ArchipelagoRoot } elseif ($savedArch) { $savedArch } else { 'C:\ProgramData\Archipelago' }
         rpcs3Path = if ($RPCS3Path) { $RPCS3Path } else { $savedRpcs3 }
         pcsx2Path = if ($PCSX2Path) { $PCSX2Path } else { $savedPcsx2 }
+        lawrencePath = if ($LawrencePath) { $LawrencePath } else { $savedLawrence }
     }
 }
 
@@ -395,516 +404,24 @@ function Resolve-PrerequisitesInteractive([string[]]$SelectedGames) {
     }
 }
 
-# ---------------------------------------------------------------------------
-# RAC1 stack: manifest, detection, verified download, managed apworld.
-# Only rac1-apworld is ever written by Setup. Everything else is detect-only.
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
+# RAC1 stack: manifest, detection, verified download, managed components.
+# Only components the manifest marks managed are ever written by Setup.
+# Everything else is detect-only.
+#
+# The implementation lives in lib\ so each part stays reviewable. The folder
+# travels with this script into the release package and into the install root,
+# so a released install and a repo checkout run exactly the same code.
+# -------------------------------------------------------------------------
 
-function Get-StackManifestCandidates {
-    # Highest priority first: explicit override, refreshed copy, embedded payload copy.
-    $candidates = [System.Collections.Generic.List[string]]::new()
-    if ($ManifestPath) { $candidates.Add((Get-FullPath $ManifestPath)) }
-    $candidates.Add((Join-Path $script:StackRoot 'manifest.json'))
-    try { $candidates.Add((Join-Path (Resolve-PayloadRoot) 'stack-manifest.json')) } catch { }
-    @($candidates)
-}
-
-function Test-StackManifestObject($Manifest) {
-    # Throws on any structural problem so a bad manifest can never drive a download.
-    if ($null -eq $Manifest) { throw 'Stack manifest is empty.' }
-    if ((Get-OptionalProperty $Manifest 'schemaVersion') -ne 1) { throw "Unsupported stack manifest schemaVersion: $(Get-OptionalProperty $Manifest 'schemaVersion')" }
-    $components = Get-OptionalProperty $Manifest 'components'
-    if ($null -eq $components) { throw 'Stack manifest has no components.' }
-    $allowlist = @(Get-OptionalProperty $Manifest 'originAllowlist' | Where-Object { $_ })
-    if ($allowlist.Count -eq 0) { throw 'Stack manifest has no originAllowlist.' }
-    foreach ($property in $components.PSObject.Properties) {
-        $component = $property.Value
-        if ((Get-OptionalProperty $component 'kind') -ne 'managed-file') { continue }
-        if (-not (Get-OptionalProperty $component 'fileName')) { throw "Managed component $($property.Name) has no fileName." }
-        foreach ($entry in @(Get-OptionalProperty $component 'versions')) {
-            if ($null -eq $entry) { continue }
-            foreach ($required in @('version','tag','status','url','sha256','size')) {
-                if ($null -eq (Get-OptionalProperty $entry $required)) { throw "Component $($property.Name) has a version entry without '$required'." }
-            }
-            if ([string]$entry.sha256 -notmatch '^[0-9A-Fa-f]{64}$') { throw "Component $($property.Name) $($entry.version) has an invalid sha256." }
-            if ([int64]$entry.size -le 0) { throw "Component $($property.Name) $($entry.version) has an invalid size." }
-            if (@('tested','untested') -notcontains [string]$entry.status) { throw "Component $($property.Name) $($entry.version) has an unknown status '$($entry.status)'." }
-            ConvertTo-ComparableVersion ([string]$entry.version) | Out-Null
-        }
-    }
-    $true
-}
-
-function Get-StackManifest {
-    foreach ($candidate in Get-StackManifestCandidates) {
-        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
-        $manifest = Read-JsonFile $candidate
-        Test-StackManifestObject $manifest | Out-Null
-        $manifest | Add-Member -NotePropertyName sourcePath -NotePropertyValue $candidate -Force
-        return $manifest
-    }
-    $null
-}
-
-function Get-StackComponent($Manifest, [string]$Id) {
-    if ($null -eq $Manifest) { return $null }
-    Get-OptionalProperty (Get-OptionalProperty $Manifest 'components') $Id
-}
-
-function Test-ManifestOrigin([string]$Url, $Manifest) {
-    # Only https hosts named in the verified manifest, or file:// when a test says so.
-    $uri = $null
-    if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri)) { return $false }
-    if ($uri.Scheme -eq 'file') { return [bool]$AllowLocalOrigins }
-    if ($uri.Scheme -ne 'https') { return $false }
-    $allowlist = @(Get-OptionalProperty $Manifest 'originAllowlist' | Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() })
-    $allowlist -contains $uri.Host.ToLowerInvariant()
-}
-
-function Receive-WebFile([string]$Url, [string]$Destination, [int64]$MaxBytes, [int64]$ExpectedBytes) {
-    # Streams a URL to a file. Supports https:// and file:// (the latter only for tests).
-    # Aborts once MaxBytes is exceeded; reports progress against ExpectedBytes when known.
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    $request = [Net.WebRequest]::Create($Url)
-    if ($request -is [Net.HttpWebRequest]) { $request.UserAgent = 'RandOverlay-Setup'; $request.AllowAutoRedirect = $true; $request.Timeout = 60000 }
-    $response = $request.GetResponse()
-    try {
-        $sourceStream = $response.GetResponseStream()
-        $targetStream = [IO.File]::Create($Destination)
-        try {
-            $buffer = New-Object byte[] 65536
-            [int64]$total = 0
-            $nextReport = 10
-            while (($read = $sourceStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                $total += $read
-                if ($MaxBytes -gt 0 -and $total -gt $MaxBytes) { throw "Download exceeded $MaxBytes bytes." }
-                $targetStream.Write($buffer, 0, $read)
-                if ($ExpectedBytes -gt 0) {
-                    $percent = [int][Math]::Min(100, [Math]::Floor(($total * 100) / $ExpectedBytes))
-                    if ($percent -ge $nextReport) { Write-ProgressEvent 'download' $percent "Downloaded $total of $ExpectedBytes bytes"; $nextReport = $percent + 10 }
-                }
-            }
-        } finally { $targetStream.Dispose(); $sourceStream.Dispose() }
-    } finally { $response.Close() }
-    $total
-}
-
-function Save-VerifiedDownload([string]$Url, [string]$Sha256, [int64]$Size, [string]$Destination, $Manifest) {
-    # Downloads to a temp file under stack\downloads, checks size and SHA-256, then moves it
-    # to Destination. Nothing outside stack\downloads is touched unless verification passed.
-    if (-not (Test-ManifestOrigin $Url $Manifest)) { throw "Download origin is not allowlisted: $Url" }
-    New-Item -ItemType Directory -Path $script:StackDownloadRoot -Force | Out-Null
-    $temp = Join-Path $script:StackDownloadRoot ([guid]::NewGuid().ToString('N') + '.part')
-    Write-Log "Download $Url (expected $Size bytes, sha256 $Sha256)"
-    try {
-        Receive-WebFile $Url $temp $Size $Size | Out-Null
-        $actualSize = (Get-Item -LiteralPath $temp).Length
-        if ($actualSize -ne $Size) { throw "Download size mismatch: expected $Size bytes, got $actualSize." }
-        $actualHash = Get-FileSha256 $temp
-        if ($actualHash -ne $Sha256.ToUpperInvariant()) { throw "Download SHA-256 mismatch: expected $($Sha256.ToUpperInvariant()), got $actualHash." }
-        $parent = Split-Path $Destination -Parent
-        if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-        Move-Item -LiteralPath $temp -Destination $Destination -Force
-        Write-Log "Verified download placed at $Destination"
-        $Destination
-    } finally {
-        if (Test-Path -LiteralPath $temp) { Remove-ExactOwnedPath $script:StackDownloadRoot $temp }
+foreach ($libName in @('StackManifest.ps1', 'StackDetect.ps1', 'StackActions.ps1')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $script:SetupLibRoot $libName) -PathType Leaf)) {
+        throw "Installer library file is missing: $(Join-Path $script:SetupLibRoot $libName). Re-extract the release package."
     }
 }
-
-function Get-VersionCompatibility([string]$Version, $Compatible) {
-    # 'unknown', 'tested', 'compatible', 'too-old' or 'too-new' against a { min, maxExclusive, tested[] } block.
-    if (-not $Version) { return 'unknown' }
-    try { ConvertTo-ComparableVersion $Version | Out-Null } catch { return 'unknown' }
-    if ($null -eq $Compatible) { return 'unknown' }
-    foreach ($tested in @(Get-OptionalProperty $Compatible 'tested')) {
-        if ($null -eq $tested -or [string]$tested -eq '') { continue }
-        if ((Compare-ReleaseVersion $Version ([string]$tested)) -eq 0) { return 'tested' }
-    }
-    $min = [string](Get-OptionalProperty $Compatible 'min')
-    $maxExclusive = [string](Get-OptionalProperty $Compatible 'maxExclusive')
-    if ($min -and (Compare-ReleaseVersion $Version $min) -lt 0) { return 'too-old' }
-    if ($maxExclusive -and (Compare-ReleaseVersion $Version $maxExclusive) -ge 0) { return 'too-new' }
-    'compatible'
-}
-
-function Get-ArchipelagoInfo {
-    # Read-only. Version comes from the uninstall registry entry (DisplayVersion, else the
-    # version embedded in DisplayName such as "Archipelago 0.6.7"), else the launcher's file version.
-    $root = (Get-DependencyPaths).archipelagoRoot
-    $launcher = Join-Path $root 'ArchipelagoLauncher.exe'
-    $present = Test-Path -LiteralPath $launcher -PathType Leaf
-    $version = $null
-    $source = $null
-    if ($present) {
-        foreach ($uninstallRoot in @($UninstallRegistryRoots)) {
-            if (-not $uninstallRoot -or -not (Test-Path -Path $uninstallRoot)) { continue }
-            foreach ($key in @(Get-ChildItem -Path $uninstallRoot -ErrorAction SilentlyContinue)) {
-                $values = Get-ItemProperty -Path $key.PSPath -ErrorAction SilentlyContinue
-                $displayName = [string](Get-OptionalProperty $values 'DisplayName')
-                if ($displayName -notlike 'Archipelago*') { continue }
-                $displayVersion = [string](Get-OptionalProperty $values 'DisplayVersion')
-                if ($displayVersion) { $version = $displayVersion.Trim(); $source = 'uninstall registry DisplayVersion' }
-                elseif ($displayName -match 'Archipelago\s+v?(\d+\.\d+\.\d+[^\s]*)') { $version = $matches[1]; $source = 'uninstall registry DisplayName' }
-                if ($version) { break }
-            }
-            if ($version) { break }
-        }
-        if (-not $version) {
-            $productVersion = [string](Get-Item -LiteralPath $launcher).VersionInfo.ProductVersion
-            if ($productVersion -and $productVersion -notmatch '^0\.0\.0(\.0)?$') { $version = $productVersion.Trim(); $source = 'launcher file version' }
-        }
-    }
-    [pscustomobject]@{ Root=$root; LauncherPath=$launcher; Present=$present; Version=$version; Source=$source }
-}
-
-function Get-Rpcs3Info($Component) {
-    # Read-only. RPCS3 keeps config\config.yml, dev_flash and dev_hdd0 beside rpcs3.exe.
-    $dependencyPaths = Get-DependencyPaths
-    $exe = Find-Executable @('rpcs3.exe') @($dependencyPaths.rpcs3Path,(Join-Path $env:LOCALAPPDATA 'Programs\RPCS3\rpcs3.exe'),(Join-Path $env:ProgramFiles 'RPCS3\rpcs3.exe'))
-    $info = [ordered]@{ Path=$exe; Present=[bool]$exe; Root=$null; Version=$null; Firmware=$null; GamePresent=$false; ModPresent=$false; Network=$null }
-    if ($exe) {
-        $root = Split-Path $exe -Parent
-        $info.Root = $root
-        $productVersion = [string](Get-Item -LiteralPath $exe).VersionInfo.ProductVersion
-        if ($productVersion -and $productVersion -notmatch '^0\.0\.0(\.0)?$') { $info.Version = $productVersion.Trim() }
-        elseif ((Split-Path $root -Leaf) -match 'rpcs3-v?(\d+\.\d+\.\d+(?:-\d+)?)') { $info.Version = $matches[1] }
-        $firmwareFile = Join-Path $root 'dev_flash\vsh\etc\version.txt'
-        if (Test-Path -LiteralPath $firmwareFile -PathType Leaf) {
-            $firstLine = [string](Get-Content -LiteralPath $firmwareFile -TotalCount 1)
-            $info.Firmware = if ($firstLine -match 'release:(\d+\.\d+)') { $matches[1] } else { 'installed' }
-        }
-        $gameTitleId = [string](Get-OptionalProperty $Component 'gameTitleId'); if (-not $gameTitleId) { $gameTitleId = 'NPEA00385' }
-        $modTitleId = [string](Get-OptionalProperty $Component 'modTitleId'); if (-not $modTitleId) { $modTitleId = 'BORD00001' }
-        $info.GamePresent = Test-Path -LiteralPath (Join-Path $root "dev_hdd0\game\$gameTitleId") -PathType Container
-        $info.ModPresent = Test-Path -LiteralPath (Join-Path $root "dev_hdd0\game\$modTitleId") -PathType Container
-        foreach ($configPath in @((Join-Path $root 'config\config.yml'), (Join-Path $root 'config.yml'))) {
-            if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { continue }
-            $configText = Get-Content -LiteralPath $configPath -Raw
-            $info.Network = if ($configText -match '(?m)^\s*Internet enabled:\s*(\S+)') { $matches[1] } else { 'unknown' }
-            break
-        }
-    }
-    [pscustomobject]$info
-}
-
-function Get-ApworldInfo($Component) {
-    # Read-only. Finds the apworld case-insensitively in custom_worlds (or the per-user worlds
-    # folder) and maps its hash to a manifest version.
-    $fileName = [string](Get-OptionalProperty $Component 'fileName'); if (-not $fileName) { $fileName = 'rac1.apworld' }
-    $archipelagoRoot = (Get-DependencyPaths).archipelagoRoot
-    $searchDirs = @((Join-Path $archipelagoRoot 'custom_worlds'), (Join-Path $env:USERPROFILE 'Archipelago\worlds'))
-    $file = $null
-    foreach ($dir in $searchDirs) {
-        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
-        $file = Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -ieq $fileName } | Select-Object -First 1
-        if ($file) { break }
-    }
-    $info = [ordered]@{ FileName=$fileName; TargetDirectory=(Join-Path $archipelagoRoot 'custom_worlds'); Path=$null; Present=$false; Sha256=$null; Size=0; Version=$null; Tag=$null; Status='missing'; Entry=$null }
-    if ($file) {
-        $info.Path = $file.FullName; $info.Present = $true; $info.Size = $file.Length; $info.Sha256 = Get-FileSha256 $file.FullName; $info.Status = 'unknown'
-        foreach ($entry in @(Get-OptionalProperty $Component 'versions')) {
-            if ($null -eq $entry) { continue }
-            if (([string]$entry.sha256).ToUpperInvariant() -eq $info.Sha256) {
-                $info.Version = [string]$entry.version; $info.Tag = [string]$entry.tag; $info.Entry = $entry
-                $info.Status = if ([bool](Get-OptionalProperty $entry 'revoked')) { 'revoked' } else { [string]$entry.status }
-                break
-            }
-        }
-    }
-    [pscustomobject]$info
-}
-
-function Get-StackStatus([string[]]$SelectedGames) {
-    # One row per stack element. Rows never change the exit code; prerequisites do.
-    $rows = [System.Collections.Generic.List[object]]::new()
-    if ($SelectedGames -notcontains 'RAC1') { return @($rows) }
-    $manifest = $null
-    $manifestError = $null
-    try { $manifest = Get-StackManifest } catch { $manifestError = $_.Exception.Message }
-
-    $archipelagoComponent = Get-StackComponent $manifest 'archipelago'
-    $archipelago = Get-ArchipelagoInfo
-    $compatibility = Get-VersionCompatibility $archipelago.Version (Get-OptionalProperty $archipelagoComponent 'compatible')
-    $archipelagoVersionText = if ($archipelago.Version) { $archipelago.Version } else { 'unknown' }
-    $rows.Add([pscustomobject]@{
-        Id='archipelago'; Name='Archipelago Launcher'; Kind='detect-only'; Required=$true; Optional=$false
-        Ready=$archipelago.Present; Version=$archipelago.Version
-        Status=$(if ($archipelago.Present) { $compatibility } else { 'missing' })
-        Detail=$(if ($archipelago.Present) { "$($archipelago.LauncherPath) (version $archipelagoVersionText, $compatibility)" } else { $archipelago.LauncherPath })
-        Url='https://github.com/ArchipelagoMW/Archipelago/releases'
-    })
-
-    $apworldComponent = Get-StackComponent $manifest 'rac1-apworld'
-    $apworld = Get-ApworldInfo $apworldComponent
-    $apworldDetail = if (-not $apworld.Present) { "$($apworld.TargetDirectory)\$($apworld.FileName) (missing; run -Action InstallStackComponent -Component rac1-apworld)" }
-        elseif ($apworld.Version) { "$($apworld.Path) (version $($apworld.Version), $($apworld.Status))" }
-        else { "$($apworld.Path) (not a known release; sha256 $($apworld.Sha256.Substring(0, 12))...)" }
-    if ($apworld.Status -eq 'revoked') { $apworldDetail += " REVOKED: $(Get-OptionalProperty $apworld.Entry 'revokedReason')" }
-    if (-not $manifest) { $apworldDetail += ' [stack manifest unavailable' + $(if ($manifestError) { ": $manifestError" } else { '' }) + ']' }
-    $rows.Add([pscustomobject]@{
-        Id='rac1-apworld'; Name='Ratchet & Clank 1 APWorld'; Kind='managed-file'; Required=$true; Optional=$false
-        Ready=($apworld.Present -and $apworld.Status -ne 'revoked'); Version=$apworld.Version; Status=$apworld.Status
-        Detail=$apworldDetail; Url='https://github.com/Panda291/Archipelago/releases'
-    })
-
-    $rpcs3Component = Get-StackComponent $manifest 'rpcs3'
-    $rpcs3 = Get-Rpcs3Info $rpcs3Component
-    $rpcs3Status = 'missing'
-    if ($rpcs3.Present) {
-        $rpcs3Status = 'detected'
-        if ($rpcs3.Version) {
-            try {
-                $minVersion = [string](Get-OptionalProperty $rpcs3Component 'minVersion')
-                if ($minVersion -and (Compare-ReleaseVersion $rpcs3.Version $minVersion) -lt 0) { $rpcs3Status = 'below-minimum' }
-                foreach ($bad in @(Get-OptionalProperty $rpcs3Component 'knownBad')) {
-                    if ($null -eq $bad -or [string]$bad -eq '') { continue }
-                    if ((Compare-ReleaseVersion $rpcs3.Version ([string]$bad)) -eq 0) { $rpcs3Status = 'known-bad' }
-                }
-            } catch { }
-        }
-    }
-    $rpcs3VersionText = if ($rpcs3.Version) { $rpcs3.Version } else { 'unknown' }
-    $rpcs3Detail = if ($rpcs3.Present) {
-        "$($rpcs3.Path) (version $rpcs3VersionText; firmware $(if ($rpcs3.Firmware) { $rpcs3.Firmware } else { 'missing' }); game NPEA00385 $(if ($rpcs3.GamePresent) { 'present' } else { 'missing' }); multiplayer PKG $(if ($rpcs3.ModPresent) { 'present' } else { 'missing' }); network $(if ($rpcs3.Network) { $rpcs3.Network } else { 'unknown' }))"
-    } else { 'Not found in known locations' }
-    $rows.Add([pscustomobject]@{
-        Id='rpcs3'; Name='RPCS3'; Kind='detect-only'; Required=$true; Optional=$false
-        Ready=$rpcs3.Present; Version=$rpcs3.Version; Status=$rpcs3Status; Detail=$rpcs3Detail; Url='https://rpcs3.net/download'
-    })
-    $rows.Add([pscustomobject]@{
-        Id='rpcs3-firmware'; Name='PS3 firmware in RPCS3'; Kind='user-supplied'; Required=$true; Optional=$false
-        Ready=[bool]$rpcs3.Firmware; Version=$rpcs3.Firmware; Status=$(if ($rpcs3.Firmware) { 'present' } else { 'missing' })
-        Detail='Obtain PS3UPDAT.PUP from Sony, then RPCS3 File > Install Firmware. Never bundled by this tool.'
-        Url='https://www.playstation.com/en-us/support/hardware/ps3/system-software/'
-    })
-    $rows.Add([pscustomobject]@{
-        Id='rac1-game'; Name='Ratchet & Clank (NPEA00385) in RPCS3'; Kind='user-supplied'; Required=$true; Optional=$false
-        Ready=$rpcs3.GamePresent; Version=$null; Status=$(if ($rpcs3.GamePresent) { 'present' } else { 'missing' })
-        Detail='Your own legitimately owned copy, installed in RPCS3. Never bundled by this tool.'
-        Url='https://github.com/Panda291/Archipelago/blob/main/worlds/RAC1/docs/setup_en.md'
-    })
-    $rows.Add([pscustomobject]@{
-        Id='rac1-multiplayer'; Name='Ratchet & Clank Multiplayer Client (PKG)'; Kind='detect-only'; Required=$true; Optional=$false
-        Ready=$rpcs3.ModPresent; Version=$null; Status=$(if ($rpcs3.ModPresent) { 'present' } else { 'missing' })
-        Detail=$(if ($rpcs3.ModPresent) { 'dev_hdd0\game\BORD00001 present' } else { 'Install the PKG through RPCS3 File > Install Packages/Raps/Edats' })
-        Url='https://github.com/bordplate/rac1-multiplayer/releases'
-    })
-    $rows.Add([pscustomobject]@{
-        Id='rpcs3-network'; Name='RPCS3 network status'; Kind='detect-only'; Required=$true; Optional=$false
-        Ready=($rpcs3.Network -eq 'Connected'); Version=$null; Status=$(if ($rpcs3.Network) { $rpcs3.Network } else { 'unknown' })
-        Detail='RPCS3 Configuration > System > Network > Network Status must be Connected (this tool never changes it)'
-        Url='https://github.com/Panda291/Archipelago/blob/main/worlds/RAC1/docs/setup_en.md'
-    })
-
-    $lawrenceProcess = Get-Process -Name Lawrence -ErrorAction SilentlyContinue | Select-Object -First 1
-    $rows.Add([pscustomobject]@{
-        Id='lawrence'; Name='Lawrence server (self-hosting only)'; Kind='detect-only'; Required=$false; Optional=$true
-        Ready=[bool]$lawrenceProcess; Version=$null; Status=$(if ($lawrenceProcess) { 'running' } else { 'not running' })
-        Detail='Only needed to host a multiworld locally. Not redistributable; download it yourself from the official page.'
-        Url='https://github.com/bordplate/Lawrence/releases'
-    })
-    $popTracker = Find-Executable @('poptracker.exe') @((Join-Path $env:LOCALAPPDATA 'Programs\PopTracker\poptracker.exe'),(Join-Path $env:ProgramFiles 'PopTracker\poptracker.exe'))
-    $rows.Add([pscustomobject]@{
-        Id='poptracker'; Name='PopTracker (optional tracker)'; Kind='detect-only'; Required=$false; Optional=$true
-        Ready=[bool]$popTracker; Version=$null; Status=$(if ($popTracker) { 'detected' } else { 'not detected' })
-        Detail=$(if ($popTracker) { $popTracker } else { 'Optional companion tracker' })
-        Url='https://github.com/black-sliver/PopTracker/releases'
-    })
-    @($rows)
-}
-
-function Show-StackStatus([object[]]$Rows) {
-    if (@($Rows).Count -eq 0) { return }
-    Write-Step 'RAC1 stack'
-    foreach ($row in $Rows) {
-        if ($row.Ready) { Write-Ok "$($row.Name) - $($row.Detail)" }
-        elseif ($row.Optional) { Write-Log "$($row.Name) - $($row.Detail)" 'INFO'; Write-Host "[INFO] $($row.Name) - $($row.Detail)" -ForegroundColor DarkGray }
-        else { Write-Fail "$($row.Name) - $($row.Detail)"; Write-Hyperlink 'Official page' $row.Url }
-    }
-}
-
-function Get-StackState {
-    $state = Get-State
-    if (-not $state) { throw 'No installation exists. Run Install first.' }
-    $stack = Get-OptionalProperty $state 'stack'
-    if ($null -eq $stack) { $stack = [pscustomobject]@{} }
-    [pscustomobject]@{ State=$state; Stack=$stack }
-}
-
-function Save-StackState($State, $Stack) {
-    $State | Add-Member -NotePropertyName stack -NotePropertyValue $Stack -Force
-    $State | Add-Member -NotePropertyName updatedAt -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
-    Write-JsonFile $script:StatePath $State
-}
-
-function Set-StackComponentState($StackState, [string]$Id, $Entry, [string]$Path, [bool]$Adopted, $Previous) {
-    $existingRecord = Get-OptionalProperty $StackState.Stack $Id
-    if ($null -eq $Previous -and $existingRecord) { $Previous = Get-OptionalProperty $existingRecord 'previous' }
-    $record = [ordered]@{
-        version=[string]$Entry.version; tag=[string]$Entry.tag; sha256=([string]$Entry.sha256).ToUpperInvariant(); status=[string]$Entry.status
-        path=$Path; adopted=$Adopted; untested=([string]$Entry.status -ne 'tested')
-        installedAt=(Get-Date).ToUniversalTime().ToString('o'); previous=$Previous
-    }
-    $StackState.Stack | Add-Member -NotePropertyName $Id -NotePropertyValue ([pscustomobject]$record) -Force
-    Save-StackState $StackState.State $StackState.Stack
-}
-
-function Remove-ManagedStackFiles {
-    # Deletes only files Setup itself placed (adopted=false) whose bytes still match the record.
-    # These live outside the install root by design, so the containment helper is not used.
-    $state = Get-State
-    $stack = if ($state) { Get-OptionalProperty $state 'stack' } else { $null }
-    if (-not $stack) { Write-Warn 'No managed stack files are recorded.'; return }
-    foreach ($property in $stack.PSObject.Properties) {
-        $record = $property.Value
-        $path = [string](Get-OptionalProperty $record 'path')
-        if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-        if ([bool](Get-OptionalProperty $record 'adopted')) { Write-Warn "$path was adopted, not placed by Setup; leaving it in place."; continue }
-        $expected = ([string](Get-OptionalProperty $record 'sha256')).ToUpperInvariant()
-        if ((Get-FileSha256 $path) -ne $expected) { Write-Warn "$path no longer matches what Setup placed; leaving it in place."; continue }
-        [IO.File]::Delete($path)
-        Write-Ok "Removed managed file $path"
-    }
-}
-
-function Invoke-InstallStackComponent {
-    if ($Component -ne 'rac1-apworld') { throw "Unsupported stack component '$Component'. Only rac1-apworld is managed." }
-    $manifest = Get-StackManifest
-    if (-not $manifest) { throw 'No stack manifest is available. Run Setup from a release package, or Repair first.' }
-    $componentEntry = Get-StackComponent $manifest $Component
-    if (-not $componentEntry -or (Get-OptionalProperty $componentEntry 'kind') -ne 'managed-file') { throw "Component '$Component' is not a managed file in this manifest." }
-    $displayName = [string](Get-OptionalProperty $componentEntry 'displayName')
-    $stackState = Get-StackState
-    if (Test-Path -LiteralPath $script:StackDownloadRoot) {
-        Get-ChildItem -LiteralPath $script:StackDownloadRoot -File | ForEach-Object { Remove-ExactOwnedPath $script:StackDownloadRoot $_.FullName }
-    }
-
-    $versions = @(Get-OptionalProperty $componentEntry 'versions' | Where-Object { $_ })
-    $requested = $null
-    if ($ComponentVersion) {
-        $requested = $versions | Where-Object { [string]$_.version -eq $ComponentVersion -or [string]$_.tag -eq $ComponentVersion } | Select-Object -First 1
-        if (-not $requested) { throw "Version '$ComponentVersion' is not listed for $Component." }
-        if ([bool](Get-OptionalProperty $requested 'revoked')) { throw "Version $($requested.version) is revoked: $(Get-OptionalProperty $requested 'revokedReason')" }
-        if ([string]$requested.status -ne 'tested' -and -not $AllowUntested) { throw "Version $($requested.version) is untested. Rerun with -AllowUntested to install it anyway." }
-    } else {
-        $candidates = @($versions | Where-Object { [string]$_.status -eq 'tested' -and -not [bool](Get-OptionalProperty $_ 'revoked') })
-        if ($candidates.Count -eq 0) { throw "No tested, unrevoked version of $Component is listed." }
-        $requested = $candidates[0]
-        foreach ($candidate in $candidates) {
-            if ((Compare-ReleaseVersion ([string]$candidate.version) ([string]$requested.version)) -gt 0) { $requested = $candidate }
-        }
-    }
-
-    $existing = Get-ApworldInfo $componentEntry
-    $targetPath = if ($existing.Present) { $existing.Path } else { Join-Path $existing.TargetDirectory $existing.FileName }
-    if ($existing.Present -and $existing.Sha256 -eq ([string]$requested.sha256).ToUpperInvariant()) {
-        Write-Ok "$displayName $($requested.version) is already installed at $targetPath; adopted without changes."
-        Set-StackComponentState $stackState $Component $requested $targetPath $true $null
-        return
-    }
-    if ($existing.Present) {
-        $description = if ($existing.Version) { "version $($existing.Version) ($($existing.Status))" } else { 'a file that is not a known release' }
-        Write-Warn "$targetPath already contains $description."
-        $confirmed = [bool]$ReplaceExisting
-        if (-not $confirmed -and -not $NonInteractive) {
-            $confirmed = (Read-Host "Replace it with $($requested.version)? A backup is kept under $script:StackRollbackRoot [y/N]") -match '^(?i)y(es)?$'
-        }
-        if (-not $confirmed) {
-            Write-Warn "Nothing was changed. Rerun with -ReplaceExisting to replace it with $($requested.version); a backup is kept under $script:StackRollbackRoot."
-            $script:ExitCode = 3
-            return
-        }
-    }
-    if (Get-Process -Name 'Archipelago*' -ErrorAction SilentlyContinue) { Write-Warn 'Archipelago is running; restart the Launcher afterwards so it loads the new apworld.' }
-
-    Write-ProgressEvent 'download' 0 "Downloading $displayName $($requested.version) from $($requested.url)"
-    $staged = Save-VerifiedDownload ([string]$requested.url) ([string]$requested.sha256) ([int64]$requested.size) (Join-Path $script:StackDownloadRoot ("$Component-" + [string]$requested.tag + '.verified')) $manifest
-    $previous = $null
-    if ($existing.Present) {
-        New-Item -ItemType Directory -Path $script:StackRollbackRoot -Force | Out-Null
-        Get-ChildItem -LiteralPath $script:StackRollbackRoot -File -Filter "$Component.*" | ForEach-Object { Remove-ExactOwnedPath $script:StackRollbackRoot $_.FullName }
-        $suffix = if ($existing.Version) { $existing.Version } else { $existing.Sha256.Substring(0, 8).ToLowerInvariant() }
-        $backupPath = Join-Path $script:StackRollbackRoot "$Component.$suffix"
-        Copy-Item -LiteralPath $existing.Path -Destination $backupPath -Force
-        $previous = [pscustomobject]@{ path=$existing.Path; sha256=$existing.Sha256; version=$existing.Version; backupPath=$backupPath }
-        Write-Log "Backed up $($existing.Path) to $backupPath"
-    }
-    Write-ProgressEvent 'install' 90 "Placing $($existing.FileName) into $(Split-Path $targetPath -Parent)"
-    New-Item -ItemType Directory -Path (Split-Path $targetPath -Parent) -Force | Out-Null
-    Move-Item -LiteralPath $staged -Destination $targetPath -Force
-    Set-StackComponentState $stackState $Component $requested $targetPath $false $previous
-    Write-ProgressEvent 'done' 100 "$displayName $($requested.version) installed"
-    Write-Ok "$displayName $($requested.version) ($($requested.status)) installed at $targetPath"
-    if ([string]$requested.status -ne 'tested') { Write-Warn 'This version is untested with the overlay; report problems through the project issue form.' }
-}
-
-function Invoke-StackRollback {
-    if ($Component -ne 'rac1-apworld') { throw "Unsupported stack component '$Component'. Only rac1-apworld is managed." }
-    $stackState = Get-StackState
-    $record = Get-OptionalProperty $stackState.Stack $Component
-    $previous = if ($record) { Get-OptionalProperty $record 'previous' } else { $null }
-    if (-not $previous) { throw "No previous $Component version is recorded; nothing to roll back." }
-    $backupPath = [string](Get-OptionalProperty $previous 'backupPath')
-    if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) { throw "Rollback file is missing: $backupPath" }
-    $expected = ([string](Get-OptionalProperty $previous 'sha256')).ToUpperInvariant()
-    if ((Get-FileSha256 $backupPath) -ne $expected) { throw "Rollback file failed verification: $backupPath" }
-    $targetPath = [string](Get-OptionalProperty $record 'path')
-    if (-not $targetPath) { $targetPath = [string](Get-OptionalProperty $previous 'path') }
-    Copy-Item -LiteralPath $backupPath -Destination $targetPath -Force
-    $restored = [ordered]@{
-        version=(Get-OptionalProperty $previous 'version'); tag=$null; sha256=$expected; status='rolled-back'
-        path=$targetPath; adopted=$true; untested=$true; installedAt=(Get-Date).ToUniversalTime().ToString('o'); previous=$null
-    }
-    $stackState.Stack | Add-Member -NotePropertyName $Component -NotePropertyValue ([pscustomobject]$restored) -Force
-    Save-StackState $stackState.State $stackState.Stack
-    Write-Ok "$Component restored from $backupPath to $targetPath"
-}
-
-function Invoke-RefreshManifest {
-    # User-initiated only. Downloads stack-manifest.json and SHA256SUMS.txt from the project's own
-    # GitHub release (or explicit -ManifestUrl/-ChecksumUrl), verifies, validates, then saves.
-    $current = Get-StackManifest
-    if (-not $current) { throw 'No embedded stack manifest is available to validate origins against.' }
-    $manifestSource = $ManifestUrl
-    $checksumSource = $ChecksumUrl
-    if (-not $manifestSource -or -not $checksumSource) {
-        Write-Step 'Checking official GitHub Releases for a newer stack manifest'
-        $release = Invoke-RestMethod -Uri "$script:RepoApi/releases/latest" -Headers @{ 'User-Agent'='RandOverlay-Setup' }
-        $manifestAsset = @($release.assets | Where-Object { $_.name -eq 'stack-manifest.json' }) | Select-Object -First 1
-        $sumAsset = @($release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' }) | Select-Object -First 1
-        if (-not $manifestAsset -or -not $sumAsset) { throw 'The latest release does not publish stack-manifest.json and SHA256SUMS.txt.' }
-        $manifestSource = [string]$manifestAsset.browser_download_url
-        $checksumSource = [string]$sumAsset.browser_download_url
-    }
-    foreach ($url in @($manifestSource, $checksumSource)) {
-        if (-not (Test-ManifestOrigin $url $current)) { throw "Refresh origin is not allowlisted: $url" }
-    }
-    $tempParent = Assert-SafeRoot ([IO.Path]::GetTempPath())
-    $temp = Join-Path $tempParent ('RandOverlayManifest-' + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $temp | Out-Null
-    try {
-        $manifestFile = Join-Path $temp 'stack-manifest.json'
-        $sumsFile = Join-Path $temp 'SHA256SUMS.txt'
-        Write-ProgressEvent 'download' 20 'Downloading stack-manifest.json'
-        Receive-WebFile $manifestSource $manifestFile 1048576 0 | Out-Null
-        Receive-WebFile $checksumSource $sumsFile 65536 0 | Out-Null
-        Write-ProgressEvent 'verify' 60 'Verifying the manifest against SHA256SUMS.txt'
-        $line = Get-Content -LiteralPath $sumsFile | Where-Object { $_ -match '\sstack-manifest\.json$' } | Select-Object -First 1
-        if (-not $line) { throw 'SHA256SUMS.txt does not list stack-manifest.json.' }
-        $actual = Get-FileSha256 $manifestFile
-        if ($actual -ne (($line -split '\s+')[0].ToUpperInvariant())) { throw 'Downloaded stack manifest failed SHA-256 verification.' }
-        $candidate = Read-JsonFile $manifestFile
-        Test-StackManifestObject $candidate | Out-Null
-        New-Item -ItemType Directory -Path $script:StackRoot -Force | Out-Null
-        Copy-Item -LiteralPath $manifestFile -Destination (Join-Path $script:StackRoot 'manifest.json') -Force
-        Write-JsonFile (Join-Path $script:StackRoot 'manifest.source.json') ([ordered]@{ url=$manifestSource; sha256=$actual; fetchedAt=(Get-Date).ToUniversalTime().ToString('o'); manifestVersion=[string](Get-OptionalProperty $candidate 'manifestVersion') })
-        Write-ProgressEvent 'done' 100 'Stack manifest saved'
-        Write-Ok "Stack manifest $(Get-OptionalProperty $candidate 'manifestVersion') verified and saved."
-    } finally {
-        if (Test-Path -LiteralPath $temp) { Remove-ExactOwnedPath $tempParent $temp }
-    }
-}
+. (Join-Path $script:SetupLibRoot 'StackManifest.ps1')
+. (Join-Path $script:SetupLibRoot 'StackDetect.ps1')
+. (Join-Path $script:SetupLibRoot 'StackActions.ps1')
 
 function Test-EmulatorsStopped {
     $running = @(Get-Process rpcs3,pcsx2-qt,pcsx2 -ErrorAction SilentlyContinue)
@@ -968,6 +485,16 @@ function Get-InstalledFileRecords([string]$Root) {
     @($records)
 }
 
+function Copy-SetupToInstallRoot {
+    # The installed copy is what Repair, Uninstall and CheckForUpdates run later, so it
+    # needs the lib\ folder this script dot-sources. Both travel together or not at all.
+    if ((Get-FullPath $PSCommandPath) -eq (Get-FullPath $script:InstalledSetupPath)) { return }
+    Copy-Item -LiteralPath $PSCommandPath -Destination $script:InstalledSetupPath -Force
+    if ((Get-FullPath $script:SetupLibRoot) -eq (Get-FullPath $script:InstalledLibRoot)) { return }
+    if (Test-Path -LiteralPath $script:InstalledLibRoot) { Remove-ExactOwnedPath $InstallRoot $script:InstalledLibRoot }
+    Copy-DirectoryContents $script:SetupLibRoot $script:InstalledLibRoot
+}
+
 function Save-PendingPackage([string]$SourcePayload, $Metadata, [string[]]$SelectedGames, [string]$SelectedActive) {
     $oldState = Get-State
     New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
@@ -975,9 +502,7 @@ function Save-PendingPackage([string]$SourcePayload, $Metadata, [string[]]$Selec
         if (Test-Path -LiteralPath $script:CachedPayloadRoot) { Remove-ExactOwnedPath $InstallRoot $script:CachedPayloadRoot }
         Copy-DirectoryContents $SourcePayload $script:CachedPayloadRoot
     }
-    if ((Get-FullPath $PSCommandPath) -ne (Get-FullPath $script:InstalledSetupPath)) {
-        Copy-Item -LiteralPath $PSCommandPath -Destination $script:InstalledSetupPath -Force
-    }
+    Copy-SetupToInstallRoot
     $state = [ordered]@{
         schemaVersion=1; status='pending-prerequisites'
         installedVersion=$(if($oldState){$oldState.installedVersion}else{$null})
@@ -1021,9 +546,7 @@ function Complete-Install($Metadata, [string[]]$SelectedGames, [string]$Selected
     } finally {
         if (Test-Path -LiteralPath $stage) { Remove-ExactOwnedPath $InstallRoot $stage }
     }
-    if ((Get-FullPath $PSCommandPath) -ne (Get-FullPath $script:InstalledSetupPath)) {
-        Copy-Item -LiteralPath $PSCommandPath -Destination $script:InstalledSetupPath -Force
-    }
+    Copy-SetupToInstallRoot
     Write-ProgressEvent 'register' 85 'Registering the Vulkan implicit layer'
     Set-CanonicalRegistration
 
@@ -1153,7 +676,8 @@ function Invoke-Uninstall {
     $script:LogEnabled = $false
     Remove-OwnedRegistrations
     if (-not $KeepConfig -and (Test-Path -LiteralPath $script:ConfigPath)) { Remove-ExactOwnedPath $InstallRoot $script:ConfigPath }
-    foreach ($relative in @('current','package','rollback','stack','logs','setup-state.json','Setup-RandOverlay.ps1')) {
+    Remove-StackTree
+    foreach ($relative in @('current','package','rollback','logs','lib','setup-state.json','Setup-RandOverlay.ps1')) {
         $target = Join-Path $InstallRoot $relative
         if (Test-Path -LiteralPath $target) { Remove-ExactOwnedPath $InstallRoot $target }
     }
@@ -1281,7 +805,9 @@ function Invoke-Interactive {
         Invoke-Install
         return
     }
-    Write-Host '[1] Status  [2] Repair  [3] Configure  [4] Check for updates  [5] Uninstall  [6] Install RAC1 APWorld'
+    Write-Host '[1] Status  [2] Repair  [3] Configure  [4] Check for updates  [5] Uninstall'
+    Write-Host '[6] Install RAC1 APWorld  [7] Install PopTracker  [8] Download multiplayer PKG'
+    Write-Host '[9] Set RPCS3 network to Connected  [10] Launch or host'
     switch ((Read-Host 'Selection').Trim()) {
         '1' { Invoke-Status }
         '2' { Invoke-Repair }
@@ -1293,6 +819,10 @@ function Invoke-Interactive {
         '4' { Invoke-CheckForUpdates }
         '5' { if ((Read-Host 'Uninstall RandOverlay? [y/N]') -match '^(?i)y(es)?$') { Invoke-Uninstall } }
         '6' { $script:Component = 'rac1-apworld'; Invoke-InstallStackComponent }
+        '7' { $script:Component = 'poptracker'; Invoke-InstallStackComponent }
+        '8' { $script:Component = 'rac1-multiplayer'; Invoke-InstallStackComponent }
+        '9' { Invoke-ConfigureRpcs3Network }
+        '10' { Invoke-Launch }
         default { Write-Warn 'Unknown selection.' }
     }
 }
@@ -1315,6 +845,8 @@ if (-not $LoadOnly) {
             'InstallStackComponent' { Invoke-InstallStackComponent }
             'StackRollback' { Invoke-StackRollback }
             'RefreshManifest' { Invoke-RefreshManifest }
+            'ConfigureRpcs3Network' { Invoke-ConfigureRpcs3Network }
+            'Launch' { Invoke-Launch }
         }
     } catch {
         Write-Log ("Failed: {0}" -f $_.Exception.Message) 'ERROR'

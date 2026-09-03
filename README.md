@@ -55,9 +55,15 @@ Archipelago client window title to distinguish RAC2 from RAC3 and pauses rather 
 
 For RAC1, Status and Preflight also check the wider Archipelago stack: the Archipelago version,
 which pinned release of the RAC1 apworld is installed, and whether RPCS3 has firmware, the game,
-the multiplayer PKG and networking enabled. Setup can install or adopt the apworld from a
-pinned, checksummed manifest (with backup and rollback); it never bundles or downloads anything
-else, and firmware and game files always come from you.
+the multiplayer PKG and networking enabled. Setup can install or adopt three things from a
+pinned, checksummed manifest, each with backup and rollback: the RAC1 apworld, a portable copy
+of PopTracker kept under the install root, and the multiplayer PKG, which is verified and then
+handed to you to install in RPCS3 rather than written into it.
+
+Setup can also set RPCS3's network status to Connected, but only through an explicit action
+that backs up `config.yml` first and changes nothing else, and it can launch Archipelago,
+RPCS3, PopTracker or a Lawrence build you point it at. Firmware, the game and Lawrence always
+come from you; nothing else is ever bundled or downloaded.
 
 Until trusted signing is active, Windows may show an Unknown Publisher or SmartScreen
 reputation warning. This can occur because the project is unsigned or has not established

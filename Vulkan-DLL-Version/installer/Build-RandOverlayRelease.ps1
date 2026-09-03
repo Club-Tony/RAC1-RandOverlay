@@ -139,6 +139,9 @@ $manifestSource = Join-Path $InstallerRoot 'stack-manifest.json'
 $null = Get-Content -LiteralPath $manifestSource -Raw | ConvertFrom-Json   # fail fast on malformed JSON
 Copy-Item -LiteralPath $manifestSource -Destination (Join-Path $payload 'stack-manifest.json')
 Copy-Item -LiteralPath (Join-Path $InstallerRoot 'Setup-RandOverlay.ps1') -Destination (Join-Path $packageRoot 'Setup-RandOverlay.ps1')
+$libSource = Join-Path $InstallerRoot 'lib'
+if (-not (Test-Path -LiteralPath $libSource -PathType Container)) { throw "Installer library folder is missing: $libSource" }
+Copy-Item -LiteralPath $libSource -Destination (Join-Path $packageRoot 'lib') -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $InstallerRoot 'Install-RandOverlay.bat') -Destination (Join-Path $packageRoot 'Install-RandOverlay.bat')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'LICENSE') -Destination (Join-Path $packageRoot 'LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'PRIVACY.md') -Destination (Join-Path $packageRoot 'PRIVACY.md')
