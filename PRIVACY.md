@@ -17,4 +17,13 @@ does not receive a copy. Diagnostics are stored locally and redact the user prof
 when displayed or exported where practical.
 
 Official dependency destinations are restricted to the Archipelago, RPCS3, PCSX2, GPU
-vendor, Microsoft WinGet, and GitHub project pages documented in the source repository.
+vendor, Microsoft WinGet, Sony PlayStation support, and GitHub project pages documented in
+the source repository (including the Ratchet & Clank apworld, multiplayer client, Lawrence,
+and PopTracker projects).
+
+Two further actions download files, and only when the user runs them: installing the RAC1
+apworld fetches one file from the GitHub release URL pinned in the bundled stack manifest and
+verifies its size and SHA-256 before placing it; refreshing that manifest fetches
+`stack-manifest.json` and `SHA256SUMS.txt` from this project's own GitHub release and verifies
+them. Nothing is downloaded from any other origin, nothing runs in the background, and the
+tool never modifies RPCS3 or Archipelago configuration.

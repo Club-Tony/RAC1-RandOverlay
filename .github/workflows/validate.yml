@@ -61,3 +61,7 @@ jobs:
       - name: Run Vulkan installer lifecycle tests
         shell: pwsh
         run: .\Vulkan-DLL-Version\tests\installer\Test-Installer.ps1
+
+      - name: Run Vulkan stack manager tests
+        shell: pwsh
+        run: .\Vulkan-DLL-Version\tests\installer\Test-Stack.ps1

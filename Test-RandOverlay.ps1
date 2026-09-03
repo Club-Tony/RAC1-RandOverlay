@@ -142,7 +142,9 @@ Invoke-Check "PowerShell parser" {
         "PS+WPF-Version\RandOverlay.ps1",
         "Vulkan-DLL-Version\installer\Setup-RandOverlay.ps1",
         "Vulkan-DLL-Version\installer\Build-RandOverlayRelease.ps1",
-        "Vulkan-DLL-Version\tests\installer\Test-Installer.ps1"
+        "Vulkan-DLL-Version\tests\installer\Test-Installer.ps1",
+        "Vulkan-DLL-Version\tests\installer\TestCommon.ps1",
+        "Vulkan-DLL-Version\tests\installer\Test-Stack.ps1"
     )) {
         $tokens = $null
         $errors = $null
