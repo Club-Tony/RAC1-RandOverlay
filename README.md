@@ -70,8 +70,8 @@ reputation warning. This can occur because the project is unsigned or has not es
 reputation; it is not described as a guaranteed false positive. Proceed only with an
 official release whose SHA-256 matches the published checksum.
 
-See [Vulkan setup details](Vulkan-DLL-Version/README.md), [privacy](PRIVACY.md), and
-[release signing](SIGNING.md).
+See [Vulkan setup details](Vulkan-DLL-Version/README.md), [privacy](PRIVACY.md),
+[release signing](SIGNING.md), and the [code signing policy](CODE-SIGNING-POLICY.md).
 
 ## Configuration
 
