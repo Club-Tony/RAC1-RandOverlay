@@ -5,6 +5,10 @@ useful only for local testing and must not be described as public trust.
 
 ## Preferred route: SignPath Foundation
 
+The public policy the Foundation requires applicants to publish is
+[CODE-SIGNING-POLICY.md](CODE-SIGNING-POLICY.md): roles, contact, what is signed, how a
+request is approved, and attribution. This file is the internal preparation notes.
+
 The repository is prepared for a SignPath Foundation application:
 
 - MIT licensed;
