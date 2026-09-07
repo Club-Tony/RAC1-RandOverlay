@@ -1,0 +1,64 @@
+/* Windows version metadata for RandOverlay_layer.dll.
+ *
+ * A signed binary is expected to say what it is: SignPath Foundation requires
+ * product name and version on every artifact it signs, and Windows shows these
+ * fields in the file properties dialog and next to a SmartScreen prompt.
+ *
+ * The numbers come from the repository VERSION file, passed in by the build:
+ * build.bat reads it and hands these macros to windres, and CMakeLists.txt does
+ * the same through PROJECT_VERSION. The defaults below only apply when the
+ * resource is compiled directly, and are deliberately 0.0.0 so an unversioned
+ * build is obvious rather than silently claiming a release number.
+ *
+ * A prerelease suffix such as -beta is not represented here, because the
+ * VERSIONINFO numeric fields cannot hold one. The setup executable carries the
+ * full string in AssemblyInformationalVersion, and so does the release filename.
+ */
+
+#include <windows.h>
+
+#ifndef RANDOVERLAY_VERSION_MAJOR
+#define RANDOVERLAY_VERSION_MAJOR 0
+#endif
+#ifndef RANDOVERLAY_VERSION_MINOR
+#define RANDOVERLAY_VERSION_MINOR 0
+#endif
+#ifndef RANDOVERLAY_VERSION_PATCH
+#define RANDOVERLAY_VERSION_PATCH 0
+#endif
+
+/* Derived from the same three numbers, so the displayed string and the numeric
+ * fields cannot disagree, and so no quoting has to survive a batch file. */
+#define RANDOVERLAY_STR_(x) #x
+#define RANDOVERLAY_STR(x) RANDOVERLAY_STR_(x)
+#define RANDOVERLAY_VERSION_STRING RANDOVERLAY_STR(RANDOVERLAY_VERSION_MAJOR) "." RANDOVERLAY_STR(RANDOVERLAY_VERSION_MINOR) "." RANDOVERLAY_STR(RANDOVERLAY_VERSION_PATCH)
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION    RANDOVERLAY_VERSION_MAJOR, RANDOVERLAY_VERSION_MINOR, RANDOVERLAY_VERSION_PATCH, 0
+PRODUCTVERSION RANDOVERLAY_VERSION_MAJOR, RANDOVERLAY_VERSION_MINOR, RANDOVERLAY_VERSION_PATCH, 0
+FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+FILEFLAGS      0
+FILEOS         VOS_NT_WINDOWS32
+FILETYPE       VFT_DLL
+FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        /* US English, Unicode. Must agree with the Translation value below. */
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Club-Tony"
+            VALUE "FileDescription",  "RandOverlay Vulkan implicit layer"
+            VALUE "FileVersion",      RANDOVERLAY_VERSION_STRING
+            VALUE "InternalName",     "RandOverlay_layer"
+            VALUE "LegalCopyright",   "Copyright (c) 2026 Club-Tony. MIT licensed."
+            VALUE "OriginalFilename", "RandOverlay_layer.dll"
+            VALUE "ProductName",      "RandOverlay"
+            VALUE "ProductVersion",   RANDOVERLAY_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
