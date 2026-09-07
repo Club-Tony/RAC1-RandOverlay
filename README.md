@@ -14,3 +14,6 @@ Simply download and run `RandOverlay.ahk` with Archipelago Text Client active (R
 
 ## PowerShell + WPF Version
 Keep `RandOverlay.bat` and `RandOverlay.ps1` in the same folder, run the `.bat` with Archipelago Text Client active.
+
+## Vulkan DLL Version
+Install with the one-click installer (`Install-RandOverlay.bat` or the setup EXE from a GitHub Release). This edition draws inside the emulator frame, so it is the one to use for exclusive fullscreen — the AHK and PowerShell + WPF editions may not display correctly in fullscreen.
