@@ -25,8 +25,9 @@ the shared repo-root `RandOverlay.ini`, so all three runtimes look consistent.
   `git clone https://github.com/ocornut/imgui deps/imgui` and
   `git clone https://github.com/TsudaKageyu/minhook deps/minhook` (minhook is only
   needed for the injected-DLL fallback).
-- **Run:** RPCS3 (RAC1) or PCSX2 (RAC2/RAC3) using the **Vulkan** renderer, plus a
-  running Archipelago client writing to `C:\ProgramData\Archipelago\logs\Launcher_*.txt`.
+- **Run (RAC1):** RPCS3 using its **Vulkan** renderer (the Windows default), plus the
+  Archipelago **Text Client** writing to `C:\ProgramData\Archipelago\logs\`. RAC2/RAC3
+  (PCSX2, named game clients) are not the supported product path yet.
 
 Release users need only the Run requirements. Build requirements apply to contributors and
 the release workflow, not to the precompiled ZIP/EXE.
@@ -124,9 +125,10 @@ engine + `lib\` so Status / Repair / Uninstall keep working. It does not bundle
 Lawrence, firmware, the game, Archipelago, or RPCS3. No telemetry.
 
 Install once. After that the overlay loads by itself the next time you start RPCS3
-(or PCSX2) with the **Vulkan** renderer — no Startup entry and no extra overlay
-process. You still need the Archipelago Text Client (or a game-specific client)
-running so there is a log to read.
+with the **Vulkan** renderer (RPCS3's usual Windows default) — no Startup entry and
+no extra overlay process. Keep the Archipelago **Text Client** running while you play
+so there is a log to read. RAC2/RAC3 remain experimental and are not this edition's
+supported path on `main`.
 
 If RPCS3, PCSX2, or Archipelago is missing or in an unusual folder, the wizard
 does **not** guess. It prints `[MISSING]`, offers Recheck, an official download
@@ -165,7 +167,7 @@ download.
 ```powershell
 .\Setup-RandOverlay.ps1 -Action Status
 .\Setup-RandOverlay.ps1 -Action Repair
-.\Setup-RandOverlay.ps1 -Action Configure -Games RAC1,RAC2
+.\Setup-RandOverlay.ps1 -Action Configure -Games RAC1
 .\Setup-RandOverlay.ps1 -Action CheckForUpdates
 .\Setup-RandOverlay.ps1 -Action Uninstall
 ```
@@ -185,16 +187,18 @@ preserves unrelated Vulkan layers.
 
 ## Usage
 
-1. Start the Archipelago Text Client (or a game-specific client).
-2. Launch RPCS3 / PCSX2 with the Vulkan renderer and boot the game.
+1. Start the Archipelago **Text Client** (RAC1 uses this generic client, not the
+   named RAC2/RAC3 clients).
+2. Launch RPCS3 with the Vulkan renderer (default on Windows) and boot RAC1.
 3. Trigger or wait for an Archipelago event — the text appears over the frame.
 
 ## Configuration
 
 Reads **`RandOverlay.ini`** (`EnabledPresets`, fallback `ActivePreset`, and `[Preset.<name>]`).
-The installed layer selects RAC1 from RPCS3 automatically. For PCSX2, it prefers the running
-game title and falls back to the Archipelago client title to distinguish RAC2 from RAC3. If the
-signals are missing or conflict, event rendering pauses rather than choosing the wrong preset.
+The installed layer selects RAC1 from RPCS3 automatically. RAC2/RAC3 (PCSX2 plus the
+named Archipelago game clients) remain in the sources but are not the supported
+product path on `main` — they are less tested, and those clients use different
+window titles than the generic Archipelago **Text Client** RAC1 uses.
 
 - `OverlayColor`, `BackgroundColor` — `#RRGGBB`
 - `VerticalPercent` — 0 (top) … 1 (bottom); overlay top edge, centered horizontally
