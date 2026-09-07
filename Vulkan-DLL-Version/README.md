@@ -118,9 +118,25 @@ On double-click the BAT:
 
 `Setup-RandOverlay.ps1` is the real wizard: pick games (RAC1 default), check only the
 dependencies those games need, install per-user under `%LOCALAPPDATA%\RandOverlay`,
-register one Vulkan implicit layer, copy the setup engine + `lib\` so Status / Repair /
-Uninstall keep working. It does not bundle Lawrence, firmware, the game, Archipelago, or
-RPCS3. No telemetry.
+register one Vulkan implicit layer at
+`HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers` (no admin), and copy the setup
+engine + `lib\` so Status / Repair / Uninstall keep working. It does not bundle
+Lawrence, firmware, the game, Archipelago, or RPCS3. No telemetry.
+
+Install once. After that the overlay loads by itself the next time you start RPCS3
+(or PCSX2) with the **Vulkan** renderer — no Startup entry and no extra overlay
+process. You still need the Archipelago Text Client (or a game-specific client)
+running so there is a log to read.
+
+If RPCS3, PCSX2, or Archipelago is missing or in an unusual folder, the wizard
+does **not** guess. It prints `[MISSING]`, offers Recheck, an official download
+link, **[P] Set custom path** (browse to `rpcs3.exe` / `pcsx2-qt.exe` /
+Archipelago's folder), or Save and exit and Repair later. It only auto-looks in
+`%LOCALAPPDATA%\Programs\RPCS3`, `%ProgramFiles%\RPCS3`, the same for PCSX2,
+`C:\ProgramData\Archipelago`, PATH, and a *currently running* emulator process.
+A portable copy on the Desktop is found via [P] (or if RPCS3 is already open).
+Firmware, the ISO/PKG, and the multiplayer client are reported on the stack rows
+but do not block installing the layer.
 
 Two different files share the name `Install-RandOverlay.bat`:
 

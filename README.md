@@ -16,4 +16,4 @@ Simply download and run `RandOverlay.ahk` with Archipelago Text Client active (R
 Keep `RandOverlay.bat` and `RandOverlay.ps1` in the same folder, run the `.bat` with Archipelago Text Client active.
 
 ## Vulkan DLL Version
-Download and run `Install-RandOverlay.bat`. This version draws inside the emulator frame, so it is the one to use for exclusive fullscreen play — the AHK and PowerShell + WPF editions may not display correctly in fullscreen.
+Download and run `Install-RandOverlay.bat` once. After that it loads automatically when you start RPCS3 with the Vulkan renderer — no Startup shortcut and nothing else to launch. Keep the Archipelago Text Client (or the RAC1 client) running so there are events to show. This version draws inside the emulator frame, so it is the one to use for exclusive fullscreen play — the AHK and PowerShell + WPF editions may not display correctly in fullscreen.
