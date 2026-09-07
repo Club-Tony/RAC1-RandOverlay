@@ -24,10 +24,162 @@ $BgColor          = "#1E1E1E"
 $BgOpacity        = 0.80
 $CornerRadius     = 12
 $PollMs           = 1500
-$Rpcs3Process     = "rpcs3"
+$EmulatorProcesses = @("rpcs3", "pcsx2-qt", "pcsx2")
 
 # ── Message color map ──────────────────────────────────────────────────────────
 $OverlayColor = "#80A0D0"   # RAC1 steel blue (brighter)
+$ColorMap = [ordered]@{
+    "test"                   = $OverlayColor
+    "found their"            = $OverlayColor
+    "completed their goal"   = $OverlayColor
+    "Congratulations"        = $OverlayColor
+    "released all remaining" = $OverlayColor
+}
+
+$ConfigFile = Join-Path (Split-Path -Parent $PSScriptRoot) "RandOverlay.ini"
+$script:ConfigWarning = $null
+
+$PresetDefaults = @{
+    RAC1 = @{
+        DisplayName = "Ratchet & Clank 1"
+        EmulatorProcesses = "rpcs3.exe"
+        OverlayColor = "#80A0D0"
+        BackgroundColor = "#1E1E1E"
+        VerticalPercent = "0.17"
+        FontFamily = "HandelGothic BT"
+        FontFallback = "Bahnschrift"
+        WpfFontSize = "43"
+    }
+    RAC2 = @{
+        DisplayName = "Ratchet & Clank 2"
+        EmulatorProcesses = "pcsx2-qt.exe,pcsx2.exe"
+        OverlayColor = "#80A0D0"
+        BackgroundColor = "#1E1E1E"
+        VerticalPercent = "0.17"
+        FontFamily = "HandelGothic BT"
+        FontFallback = "Bahnschrift"
+        WpfFontSize = "43"
+    }
+    RAC3 = @{
+        DisplayName = "Ratchet & Clank 3"
+        EmulatorProcesses = "pcsx2-qt.exe,pcsx2.exe"
+        OverlayColor = "#80A0D0"
+        BackgroundColor = "#1E1E1E"
+        VerticalPercent = "0.17"
+        FontFamily = "HandelGothic BT"
+        FontFallback = "Bahnschrift"
+        WpfFontSize = "43"
+    }
+}
+
+function Set-ConfigWarning([string]$Message) {
+    if (-not $script:ConfigWarning) { $script:ConfigWarning = $Message }
+    Write-Log $Message
+}
+
+function Read-IniFile([string]$Path) {
+    $ini = @{}
+    $section = $null
+    foreach ($line in Get-Content -LiteralPath $Path -ErrorAction Stop) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith(";") -or $trimmed.StartsWith("#")) { continue }
+        if ($trimmed -match '^\[(.+)\]$') {
+            $section = $Matches[1].Trim()
+            if (-not $ini.ContainsKey($section)) { $ini[$section] = @{} }
+            continue
+        }
+        if ($section -and $trimmed -match '^([^=]+)=(.*)$') {
+            $ini[$section][$Matches[1].Trim()] = $Matches[2].Trim()
+        }
+    }
+    return $ini
+}
+
+function Get-IniValue([hashtable]$Ini, [string]$Section, [string]$Key, [string]$Default) {
+    if ($Ini.ContainsKey($Section) -and $Ini[$Section].ContainsKey($Key)) {
+        $value = [string]$Ini[$Section][$Key]
+        if ($value.Trim()) { return $value.Trim() }
+    }
+    return $Default
+}
+
+function Get-ConfigInt([hashtable]$Ini, [string]$Section, [string]$Key, [int]$Default, [int]$Minimum = 0) {
+    $raw = Get-IniValue $Ini $Section $Key ([string]$Default)
+    $value = 0
+    if ([int]::TryParse($raw, [ref]$value) -and $value -ge $Minimum) { return $value }
+    Set-ConfigWarning "Invalid $Section.$Key; using default."
+    return $Default
+}
+
+function Get-ConfigDouble([hashtable]$Ini, [string]$Section, [string]$Key, [double]$Default) {
+    $raw = Get-IniValue $Ini $Section $Key ([string]$Default)
+    $value = 0.0
+    if ([double]::TryParse($raw, [ref]$value)) { return $value }
+    Set-ConfigWarning "Invalid $Section.$Key; using default."
+    return $Default
+}
+
+function Get-ConfigHex([hashtable]$Ini, [string]$Section, [string]$Key, [string]$Default) {
+    $raw = Get-IniValue $Ini $Section $Key $Default
+    if ($raw -match '^#?[0-9a-fA-F]{6}$') {
+        if ($raw.StartsWith("#")) { return $raw }
+        return "#$raw"
+    }
+    Set-ConfigWarning "Invalid $Section.$Key; using default."
+    return $Default
+}
+
+function Get-ConfigCsv([hashtable]$Ini, [string]$Section, [string]$Key, [string]$Default) {
+    $raw = Get-IniValue $Ini $Section $Key $Default
+    $items = @($raw -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($items.Count -gt 0) { return $items }
+    Set-ConfigWarning "Invalid $Section.$Key; using default."
+    return @($Default -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+
+$Ini = @{}
+if (Test-Path -LiteralPath $ConfigFile) {
+    try {
+        $Ini = Read-IniFile $ConfigFile
+    } catch {
+        Set-ConfigWarning "Could not read RandOverlay.ini; using built-in RAC1 defaults."
+    }
+} else {
+    Set-ConfigWarning "RandOverlay.ini not found; using built-in RAC1 defaults."
+}
+
+$ActivePreset = (Get-IniValue $Ini "General" "ActivePreset" "RAC1").ToUpperInvariant()
+if (-not $PresetDefaults.ContainsKey($ActivePreset)) {
+    Set-ConfigWarning "Unknown ActivePreset '$ActivePreset'; using RAC1 defaults."
+    $ActivePreset = "RAC1"
+}
+
+$PresetSection = "Preset.$ActivePreset"
+$PresetDefault = $PresetDefaults[$ActivePreset]
+
+$LogDir           = Get-IniValue $Ini "General" "LogDir" "C:\ProgramData\Archipelago\logs"
+$LauncherExe      = Get-IniValue $Ini "General" "LauncherExe" "C:\ProgramData\Archipelago\ArchipelagoLauncher.exe"
+$DisplayMs        = Get-ConfigInt $Ini "General" "DisplayMs" 5000 1
+$DisplaySeconds   = $DisplayMs / 1000.0
+$FadeInMs         = Get-ConfigInt $Ini "General" "FadeInMs" 300 0
+$FadeOutMs        = Get-ConfigInt $Ini "General" "FadeOutMs" 500 0
+$PollMs           = Get-ConfigInt $Ini "General" "PollMs" 1500 1
+$DisplayName      = Get-IniValue $Ini $PresetSection "DisplayName" $PresetDefault.DisplayName
+$FontFamily       = Get-IniValue $Ini $PresetSection "FontFamily" $PresetDefault.FontFamily
+$FontFallback     = Get-IniValue $Ini $PresetSection "FontFallback" $PresetDefault.FontFallback
+$script:currentFont = $null
+$FontSize         = Get-ConfigInt $Ini $PresetSection "WpfFontSize" ([int]$PresetDefault.WpfFontSize) 1
+$VerticalPercent  = Get-ConfigDouble $Ini $PresetSection "VerticalPercent" ([double]$PresetDefault.VerticalPercent)
+$BgColor          = Get-ConfigHex $Ini $PresetSection "BackgroundColor" $PresetDefault.BackgroundColor
+$BgOpacity        = 0.80
+$CornerRadius     = 12
+$OverlayColor     = Get-ConfigHex $Ini $PresetSection "OverlayColor" $PresetDefault.OverlayColor
+$EmulatorProcesses = @(Get-ConfigCsv $Ini $PresetSection "EmulatorProcesses" $PresetDefault.EmulatorProcesses | ForEach-Object {
+    $_ -replace '\.exe$', ''
+})
+
+Write-Log "Active preset: $ActivePreset ($DisplayName)"
+
 $ColorMap = [ordered]@{
     "test"                   = $OverlayColor
     "found their"            = $OverlayColor
@@ -68,6 +220,10 @@ public class OverlayWinApi {
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_FRAMECHANGED = 0x0020;
 
+    public const int GWL_STYLE = -16;
+    public const int WS_CAPTION = 0x00C00000;
+    public const int WS_THICKFRAME = 0x00040000;
+
     public static void MakeClickThrough(IntPtr hwnd) {
         int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
         SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
@@ -75,6 +231,16 @@ public class OverlayWinApi {
     public static void KeepTopmost(IntPtr hwnd) {
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
+    public static void StripBorders(IntPtr hwnd) {
+        int style = GetWindowLong(hwnd, GWL_STYLE);
+        SetWindowLong(hwnd, GWL_STYLE, style & ~WS_CAPTION & ~WS_THICKFRAME);
+        SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+    }
+    public static void RestoreBorders(IntPtr hwnd, int originalStyle) {
+        SetWindowLong(hwnd, GWL_STYLE, originalStyle);
+        SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+    }
+    public static int GetStyle(IntPtr hwnd) { return GetWindowLong(hwnd, GWL_STYLE); }
 }
 "@
 }
@@ -82,12 +248,15 @@ public class OverlayWinApi {
 Write-Log "Assemblies loaded"
 
 # ── State ──────────────────────────────────────────────────────────────────────
-$script:lastLineCount  = 0
-$script:currentLogFile = $null
-$script:overlayEnabled = $true
-$script:displayTimer   = $null
-$script:window         = $null
-$script:textBlock      = $null
+$script:lastLineCount    = 0
+$script:currentLogFile   = $null
+$script:overlayEnabled   = $true
+$script:displayTimer     = $null
+$script:window           = $null
+$script:textBlock        = $null
+$script:borderlessHwnd   = [IntPtr]::Zero
+$script:borderlessOrigStyle = 0
+$script:borderlessOrigRect  = $null
 # ── Helper functions ───────────────────────────────────────────────────────────
 function Find-NewestLog {
     $logs = Get-ChildItem -Path $LogDir -Filter "*.txt" -ErrorAction SilentlyContinue |
@@ -97,15 +266,20 @@ function Find-NewestLog {
     return $null
 }
 
-function Get-Rpcs3Bounds {
-    $proc = Get-Process -Name $Rpcs3Process -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $proc -or $proc.MainWindowHandle -eq [IntPtr]::Zero) { return $null }
-    $rect = New-Object OverlayWinApi+RECT
-    [OverlayWinApi]::GetWindowRect($proc.MainWindowHandle, [ref]$rect) | Out-Null
-    $w = $rect.Right - $rect.Left
-    $h = $rect.Bottom - $rect.Top
-    if ($w -le 0 -or $h -le 0) { return $null }
-    return @{ Left = $rect.Left; Top = $rect.Top; Width = $w; Height = $h }
+function Get-EmulatorBounds {
+    foreach ($name in $EmulatorProcesses) {
+        $proc = Get-Process -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($proc -and $proc.MainWindowHandle -ne [IntPtr]::Zero) {
+            $rect = New-Object OverlayWinApi+RECT
+            [OverlayWinApi]::GetWindowRect($proc.MainWindowHandle, [ref]$rect) | Out-Null
+            $w = $rect.Right - $rect.Left
+            $h = $rect.Bottom - $rect.Top
+            if ($w -gt 0 -and $h -gt 0) {
+                return @{ Left = $rect.Left; Top = $rect.Top; Width = $w; Height = $h }
+            }
+        }
+    }
+    return $null
 }
 
 function Get-MessageColor($text) {
@@ -155,7 +329,7 @@ function Read-NewLines {
 
 function Position-Overlay {
     if (-not $script:window) { return }
-    $bounds = Get-Rpcs3Bounds
+    $bounds = Get-EmulatorBounds
     if (-not $bounds) {
         $screen = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
         $bounds = @{ Left = $screen.Left; Top = $screen.Top; Width = $screen.Width; Height = $screen.Height }
@@ -189,12 +363,12 @@ function Show-Message($text, $color) {
     $script:activeBrush.Freeze()
     $script:textBlock.Foreground = $script:activeBrush
 
-    # Fade in (300ms)
+    # Fade in using the active preset/config timing.
     $script:window.Opacity = 0
     $fadeIn = New-Object System.Windows.Media.Animation.DoubleAnimation
     $fadeIn.From = 0.0
     $fadeIn.To = 1.0
-    $fadeIn.Duration = New-Object System.Windows.Duration([TimeSpan]::FromMilliseconds(300))
+    $fadeIn.Duration = New-Object System.Windows.Duration([TimeSpan]::FromMilliseconds($FadeInMs))
     $fadeIn.FillBehavior = [System.Windows.Media.Animation.FillBehavior]::HoldEnd
     $script:window.BeginAnimation([System.Windows.Window]::OpacityProperty, $fadeIn)
 
@@ -208,7 +382,7 @@ function Show-Message($text, $color) {
             $fadeOut = New-Object System.Windows.Media.Animation.DoubleAnimation
             $fadeOut.From = 1.0
             $fadeOut.To = 0.0
-            $fadeOut.Duration = New-Object System.Windows.Duration([TimeSpan]::FromMilliseconds(500))
+            $fadeOut.Duration = New-Object System.Windows.Duration([TimeSpan]::FromMilliseconds($FadeOutMs))
             $fadeOut.FillBehavior = [System.Windows.Media.Animation.FillBehavior]::HoldEnd
             $fadeOut.Add_Completed({
                 if ($script:window) {
@@ -396,10 +570,10 @@ $script:window.Add_Loaded({
             if ($ctrl -and $alt -and $fKey) {
                 if (-not $script:fkDown) {
                     $script:fkDown = $true
-                    if ($script:currentFont -eq "HandelGothic BT") {
-                        $script:currentFont = "Bahnschrift"
+                    if ($script:currentFont -eq $FontFamily) {
+                        $script:currentFont = $FontFallback
                     } else {
-                        $script:currentFont = "HandelGothic BT"
+                        $script:currentFont = $FontFamily
                     }
                     $script:textBlock.FontFamily = New-Object System.Windows.Media.FontFamily($script:currentFont)
                     Write-Host "  >> Font: $($script:currentFont)"
@@ -411,6 +585,72 @@ $script:window.Add_Loaded({
         }
     })
     $fk.Start()
+
+    # ── Borderless toggle poll (Ctrl+Alt+B) ─────────────────────────────
+    $bk = New-Object System.Windows.Threading.DispatcherTimer
+    $bk.Interval = [TimeSpan]::FromMilliseconds(200)
+    $script:bkDown = $false
+    $bk.Add_Tick({
+        try {
+            $ctrl = [System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Control
+            $alt  = [System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Alt
+            $bKey = [System.Windows.Input.Keyboard]::IsKeyDown([System.Windows.Input.Key]::B)
+            if ($ctrl -and $alt -and $bKey) {
+                if (-not $script:bkDown) {
+                    $script:bkDown = $true
+                    if ($script:borderlessHwnd -ne [IntPtr]::Zero) {
+                        # Restore original window
+                        [OverlayWinApi]::RestoreBorders($script:borderlessHwnd, $script:borderlessOrigStyle)
+                        $r = $script:borderlessOrigRect
+                        [OverlayWinApi]::SetWindowPos($script:borderlessHwnd, [IntPtr]::Zero,
+                            $r.Left, $r.Top, ($r.Right - $r.Left), ($r.Bottom - $r.Top),
+                            0x0020 -bor 0x0010)  # SWP_FRAMECHANGED | SWP_NOACTIVATE
+                        $script:borderlessHwnd = [IntPtr]::Zero
+                        Write-Host "  >> Borderless OFF"
+                        Show-Message "Borderless OFF - restored window" $OverlayColor
+                    } else {
+                        # Find emulator window
+                        $emuProc = $null
+                        foreach ($name in $EmulatorProcesses) {
+                            $emuProc = Get-Process -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
+                            if ($emuProc -and $emuProc.MainWindowHandle -ne [IntPtr]::Zero) { break }
+                            $emuProc = $null
+                        }
+                        if (-not $emuProc) {
+                            Show-Message "No emulator window found" $OverlayColor
+                        } else {
+                            $hwnd = $emuProc.MainWindowHandle
+                            # Save original state
+                            $script:borderlessOrigStyle = [OverlayWinApi]::GetStyle($hwnd)
+                            $origRect = New-Object OverlayWinApi+RECT
+                            [OverlayWinApi]::GetWindowRect($hwnd, [ref]$origRect) | Out-Null
+                            $script:borderlessOrigRect = $origRect
+                            $script:borderlessHwnd = $hwnd
+                            # Strip borders
+                            [OverlayWinApi]::StripBorders($hwnd)
+                            # Find the monitor and fill it
+                            $midX = $origRect.Left + (($origRect.Right - $origRect.Left) / 2)
+                            $midY = $origRect.Top + (($origRect.Bottom - $origRect.Top) / 2)
+                            $screen = [System.Windows.Forms.Screen]::AllScreens | Where-Object {
+                                $_.Bounds.Contains([int]$midX, [int]$midY)
+                            } | Select-Object -First 1
+                            if (-not $screen) { $screen = [System.Windows.Forms.Screen]::PrimaryScreen }
+                            $b = $screen.Bounds
+                            [OverlayWinApi]::SetWindowPos($hwnd, [IntPtr]::Zero,
+                                $b.Left, $b.Top, $b.Width, $b.Height,
+                                0x0020 -bor 0x0010)  # SWP_FRAMECHANGED | SWP_NOACTIVATE
+                            Write-Host "  >> Borderless ON"
+                            Show-Message "Borderless ON" $OverlayColor
+                        }
+                    }
+                }
+            } else { $script:bkDown = $false }
+        } catch {
+            $script:bkDown = $false
+            Write-Log "Borderless hotkey error: $($_.Exception.Message)"
+        }
+    })
+    $bk.Start()
 
     # ── Topmost re-assert ──────────────────────────────────────────────────
     $tm = New-Object System.Windows.Threading.DispatcherTimer
@@ -479,7 +719,8 @@ Start-Sleep -Milliseconds 100  # Brief pause for window composition
 $script:running = $true
 $script:window.Add_Closed({ $script:running = $false })
 # ── Show startup notification ──────────────────────────────────────────────────
-Show-Message "Archipelago Overlay ready - waiting for events" $OverlayColor
+$startupMessage = if ($script:ConfigWarning) { $script:ConfigWarning } else { "Archipelago Overlay ready - waiting for events" }
+Show-Message $startupMessage $OverlayColor
 Write-Host ">> Startup overlay shown"
 Write-Log "Startup overlay shown"
 

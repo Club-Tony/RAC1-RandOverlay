@@ -7,6 +7,7 @@ Works with RPCS3 in both windowed and fullscreen mode.
 ### Optional Hotkeys
 - **Ctrl+Alt+A** — Toggle overlay on/off (ON by default)
 - **Ctrl+Alt+F** — Toggle font (HandelGothic BT / Bahnschrift)
+- **Ctrl+Alt+B** — Toggle borderless emulator window (PowerShell + WPF version only)
 - **Ctrl+Esc** — Reload script (AHK version only)
 
 ## AHK Version
