@@ -14,11 +14,19 @@ $RegistryRelative = "Software\RandOverlayInstallerTests\$([guid]::NewGuid().ToSt
 $RegistryPath = "HKCU:\$RegistryRelative"
 $Failures = [System.Collections.Generic.List[string]]::new()
 . (Join-Path $PSScriptRoot 'TestCommon.ps1')
+# Isolated harness roots never load the live layer. A running RPCS3 must not
+# block scratch installs; the real wizard still requires RPCS3 to be closed.
+$env:RANDOVERLAY_ALLOW_RUNNING_EMULATOR = '1'
 
 New-Item -ItemType Directory -Path $RunRoot -Force | Out-Null
 try {
     $setupSource = Get-Content -LiteralPath (Join-Path $VulkanRoot 'installer\Setup-RandOverlay.ps1') -Raw
     Assert-True ($setupSource -match '(?s)\$cursorWasVisible\s*=\s*\[Console\]::CursorVisible.*\[Console\]::CursorVisible\s*=\s*\$false.*finally\s*\{\s*\[Console\]::CursorVisible\s*=\s*\$cursorWasVisible') 'interactive checklist hides and restores the console cursor'
+    Assert-True ($setupSource -match 'function Get-Rpcs3Candidates' -and $setupSource -match 'function Select-Rpcs3ViaDialog') 'setup can search for portable rpcs3.exe and open a file dialog'
+    Assert-True ($setupSource -match 'function Select-ArchipelagoViaDialog') 'setup can browse for ArchipelagoLauncher.exe when it is missing'
+    Assert-True ($setupSource -match '\[X\] Exit without installing') 'the multi-copy RPCS3 picker offers an explicit exit'
+    Assert-True ($setupSource -match "\[Environment\]::GetFolderPath\('Desktop'\)" -and $setupSource -match "\[Environment\]::GetFolderPath\('MyDocuments'\)") 'the RPCS3 search covers the shell known folders for OneDrive Known Folder Move'
+    Assert-True ($setupSource -match 'Use Up/Down to move, Space to toggle') 'the nightly keeps its multi-game checklist'
     Assert-True ($setupSource -match 'CouldNotAutoloadMatchingModule' -and $setupSource -match 'exact SHA-256 payload verification passed') 'setup has a hash-verified fallback when Authenticode tooling is unavailable'
 
     $layerDll = Join-Path $VulkanRoot 'build\RandOverlay_layer.dll'
@@ -105,6 +113,27 @@ param([string]$Setup, [string]$Root, [string]$Registry)
     $probeOutput = Invoke-Setup $probe @('-Setup',$setup,'-Root',$loadRoot,'-Registry',$RegistryPath)
     Assert-True ($probeOutput -match 'FUNCTIONS=True' -and -not (Test-Path -LiteralPath $loadRoot)) 'LoadOnly exposes engine functions without running an action'
     Assert-True ($probeOutput -match 'CMP=1,-1,1,1,0') 'release version comparison handles prerelease and rolling-build tags'
+
+    $searchRoot = Join-Path $RunRoot 'rpcs3-search'
+    $copyA = Join-Path $searchRoot 'Downloads\rpcs3-v1\rpcs3.exe'
+    $copyB = Join-Path $searchRoot 'Desktop\Games\Emulators\rpcs3-v2\rpcs3.exe'
+    New-Item -ItemType Directory -Path (Split-Path $copyA -Parent) -Force | Out-Null
+    New-Item -ItemType Directory -Path (Split-Path $copyB -Parent) -Force | Out-Null
+    [IO.File]::WriteAllText($copyA, 'a')
+    [IO.File]::WriteAllText($copyB, 'b')
+    $searchProbe = Join-Path $RunRoot 'rpcs3-search-probe.ps1'
+    @'
+param([string]$Setup, [string]$Root, [string]$Registry, [string]$Downloads, [string]$Desktop)
+. $Setup -LoadOnly -InstallRoot $Root -RegistryPath $Registry
+$one = @(Get-Rpcs3Candidates @($Downloads))
+$two = @(Get-Rpcs3Candidates @($Downloads, $Desktop))
+$duped = @(Get-Rpcs3Candidates @($Downloads, $Downloads))
+"ONE=$($one.Count)"
+"TWO=$($two.Count)"
+"DUP=$($duped.Count)"
+'@ | Set-Content -LiteralPath $searchProbe -Encoding ASCII
+    $searchOutput = Invoke-Setup $searchProbe @('-Setup',$setup,'-Root',$loadRoot,'-Registry',$RegistryPath,'-Downloads',(Join-Path $searchRoot 'Downloads'),'-Desktop',(Join-Path $searchRoot 'Desktop'))
+    Assert-True ($searchOutput -match 'ONE=1' -and $searchOutput -match 'TWO=2' -and $searchOutput -match 'DUP=1') 'portable rpcs3.exe search finds distinct copies and dedupes by path'
 
     $pendingRoot = Join-Path $RunRoot 'PendingLocalAppData\RandOverlay'
     $emptyArch = Join-Path $RunRoot 'EmptyArchipelago'
