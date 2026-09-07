@@ -309,6 +309,147 @@ function Find-Executable([string[]]$Names, [string[]]$Candidates) {
     $null
 }
 
+function Get-Rpcs3SearchRoots {
+    # Common places a portable RPCS3 zip gets extracted. Both the profile-relative
+    # folders and the shell known folders are listed because OneDrive Known Folder
+    # Move points Desktop/Documents at %USERPROFILE%\OneDrive\... on many Windows 11 PCs.
+    $shellDesktop = [Environment]::GetFolderPath('Desktop')
+    $shellDocuments = [Environment]::GetFolderPath('MyDocuments')
+    $roots = [System.Collections.Generic.List[string]]::new()
+    foreach ($r in @(
+        (Join-Path $env:USERPROFILE 'Downloads'),
+        (Join-Path $env:USERPROFILE 'Desktop'),
+        (Join-Path $env:USERPROFILE 'Desktop\Games'),
+        (Join-Path $env:USERPROFILE 'Documents'),
+        $shellDesktop,
+        $(if ($shellDesktop) { Join-Path $shellDesktop 'Games' }),
+        $shellDocuments,
+        (Join-Path $env:LOCALAPPDATA 'Programs'),
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)}
+    )) {
+        if (-not $r) { continue }
+        if (-not (Test-Path -LiteralPath $r -PathType Container)) { continue }
+        $full = Get-FullPath $r
+        if ($roots -notcontains $full) { $roots.Add($full) }
+    }
+    ,$roots.ToArray()
+}
+
+function Get-Rpcs3Candidates([string[]]$SearchRoots) {
+    $raw = [System.Collections.Generic.List[string]]::new()
+    $scoped = [bool]$SearchRoots
+    if (-not $scoped) {
+        $paths = Get-DependencyPaths
+        if ($paths.rpcs3Path) { $raw.Add([string]$paths.rpcs3Path) }
+        if ($RPCS3Path) { $raw.Add([string]$RPCS3Path) }
+        Get-Process rpcs3 -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.Path) { $raw.Add([string]$_.Path) }
+        }
+    }
+    $roots = if ($scoped) { @($SearchRoots) } else { @(Get-Rpcs3SearchRoots) }
+    foreach ($root in $roots) {
+        if (-not $root -or -not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+        try {
+            Get-ChildItem -LiteralPath $root -Filter 'rpcs3.exe' -File -Recurse -Depth 5 -ErrorAction SilentlyContinue |
+                ForEach-Object { $raw.Add($_.FullName) }
+        } catch { }
+    }
+    $seen = @{}
+    $hits = [System.Collections.Generic.List[object]]::new()
+    foreach ($candidate in $raw) {
+        if (-not $candidate -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        if ([IO.Path]::GetFileName($candidate) -ine 'rpcs3.exe') { continue }
+        $full = Get-FullPath $candidate
+        $key = $full.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $ver = $null
+        try {
+            $product = [string](Get-Item -LiteralPath $full).VersionInfo.ProductVersion
+            if ($product -and $product -notmatch '^0\.0\.0(\.0)?$') { $ver = $product.Trim() }
+        } catch { }
+        $hits.Add([pscustomobject]@{ Path=$full; Version=$ver })
+    }
+    @($hits)
+}
+
+function Select-FileViaDialog([string]$FileName, [string]$Title, [string]$Filter) {
+    # Runs a WinForms OpenFileDialog in a separate STA process and returns the
+    # chosen full path, or $null when the user cancels.
+    $scriptText = @(
+        'Add-Type -AssemblyName System.Windows.Forms',
+        '$d = New-Object System.Windows.Forms.OpenFileDialog',
+        ('$d.Filter = ''' + $Filter + ''''),
+        ('$d.FileName = ''' + $FileName + ''''),
+        ('$d.Title = ''' + $Title + ''''),
+        '$d.CheckFileExists = $true',
+        'if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.FileName) }'
+    ) -join "`r`n"
+    $temp = Join-Path ([IO.Path]::GetTempPath()) ('RandOverlay-FileDialog-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    try {
+        Set-Content -LiteralPath $temp -Value $scriptText -Encoding ASCII
+        $chosen = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $temp
+        if ($chosen -and (Test-Path -LiteralPath ([string]$chosen) -PathType Leaf)) { return (Get-FullPath $chosen) }
+    } finally {
+        if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+    }
+    $null
+}
+
+function Select-Rpcs3ViaDialog {
+    Select-FileViaDialog 'rpcs3.exe' 'Select rpcs3.exe' 'RPCS3|rpcs3.exe|Executables|*.exe|All files|*.*'
+}
+
+function Select-ArchipelagoViaDialog {
+    Select-FileViaDialog 'ArchipelagoLauncher.exe' 'Select ArchipelagoLauncher.exe' 'Archipelago Launcher|ArchipelagoLauncher.exe|Executables|*.exe|All files|*.*'
+}
+
+function Set-ResolvedRpcs3Path([string]$Path) {
+    $script:RPCS3Path = Get-FullPath $Path
+    Save-DependencyPathsToState
+    Write-Ok "RPCS3 - $($script:RPCS3Path)"
+}
+
+function Resolve-Rpcs3InteractiveChoice {
+    $hits = @(Get-Rpcs3Candidates)
+    if ($hits.Count -eq 1) {
+        Set-ResolvedRpcs3Path $hits[0].Path
+        return $true
+    }
+    if ($hits.Count -gt 1) {
+        Write-Step 'Several RPCS3 copies were found'
+        for ($i = 0; $i -lt $hits.Count; $i++) {
+            $ver = if ($hits[$i].Version) { " ($($hits[$i].Version))" } else { '' }
+            Write-Host "[$($i + 1)] $($hits[$i].Path)$ver"
+        }
+        Write-Host '[B] Browse for rpcs3.exe'
+        Write-Host '[X] Exit without installing'
+        while ($true) {
+            Write-Host ''
+            $answer = (Read-Host 'Selection').Trim()
+            if ($answer -match '^(?i)x$') { return $false }
+            if ($answer -match '^(?i)b$') {
+                $picked = Select-Rpcs3ViaDialog
+                if ($picked) { Set-ResolvedRpcs3Path $picked; return $true }
+                Write-Warn 'No rpcs3.exe selected. Pick a number, B to browse again, or X to exit.'
+                continue
+            }
+            $number = 0
+            if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $hits.Count) {
+                Set-ResolvedRpcs3Path $hits[$number - 1].Path
+                return $true
+            }
+            Write-Warn "Type a number from 1 to $($hits.Count), B to browse, or X to exit."
+        }
+    }
+    Write-Host 'RPCS3 was not found in Downloads, Desktop, Documents, or Program Files.'
+    $picked = Select-Rpcs3ViaDialog
+    if ($picked) { Set-ResolvedRpcs3Path $picked; return $true }
+    Write-Warn 'No rpcs3.exe selected.'
+    $false
+}
+
 function Test-WinGetPackage([string]$Id) {
     if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) { return $false }
     $output = & winget.exe list --id $Id --exact --accept-source-agreements 2>$null | Out-String
@@ -332,7 +473,17 @@ function Get-PrerequisiteStatus([string[]]$SelectedGames) {
 
     if ($SelectedGames -contains 'RAC1') {
         $rpcs3 = Find-Executable @('rpcs3.exe') @($dependencyPaths.rpcs3Path,(Join-Path $env:LOCALAPPDATA 'Programs\RPCS3\rpcs3.exe'),(Join-Path $env:ProgramFiles 'RPCS3\rpcs3.exe'))
-        $results.Add([pscustomobject]@{ Id='rpcs3'; Name='RPCS3 (selected by RAC1)'; Required=$true; Ready=[bool]$rpcs3; Detail=$(if($rpcs3){$rpcs3}else{'Not found in known locations'}); Url='https://rpcs3.net/download'; AutoInstall=$null })
+        if (-not $rpcs3) {
+            # RPCS3 ships as a portable zip, so the fixed locations above miss a
+            # Downloads or Desktop extract. Only auto-adopt an unambiguous hit.
+            $autoHits = @(Get-Rpcs3Candidates)
+            if ($autoHits.Count -eq 1) {
+                $script:RPCS3Path = $autoHits[0].Path
+                $rpcs3 = $autoHits[0].Path
+            }
+        }
+        $rpcs3Detail = if ($rpcs3) { $rpcs3 } else { 'Not found in Downloads, Desktop, Documents, or Program Files' }
+        $results.Add([pscustomobject]@{ Id='rpcs3'; Name='RPCS3 (selected by RAC1)'; Required=$true; Ready=[bool]$rpcs3; Detail=$rpcs3Detail; Url='https://rpcs3.net/download'; AutoInstall=$null })
     }
     if (($SelectedGames -contains 'RAC2') -or ($SelectedGames -contains 'RAC3')) {
         $pcsx2 = Find-Executable @('pcsx2-qt.exe','pcsx2.exe') @($dependencyPaths.pcsx2Path,(Join-Path $env:LOCALAPPDATA 'Programs\PCSX2\pcsx2-qt.exe'),(Join-Path $env:ProgramFiles 'PCSX2\pcsx2-qt.exe'))
@@ -357,6 +508,28 @@ function Show-Prerequisites([object[]]$Results) {
 }
 
 function Resolve-PrerequisitesInteractive([string[]]$SelectedGames) {
+    # One discovery pass before the menu: search for a portable RPCS3 and offer a
+    # file dialog for Archipelago. The menu below still owns recheck, official
+    # pages, typed paths, WinGet and save-and-exit; this only spares the user from
+    # having to type a path for the two dependencies we can find or browse to.
+    $probe = @(Get-PrerequisiteStatus $SelectedGames)
+    if ($SelectedGames -contains 'RAC1') {
+        $rpcs3Item = $probe | Where-Object { $_.Id -eq 'rpcs3' } | Select-Object -First 1
+        if ($rpcs3Item -and -not $rpcs3Item.Ready) { [void](Resolve-Rpcs3InteractiveChoice) }
+    }
+    $archItem = $probe | Where-Object { $_.Id -eq 'archipelago' } | Select-Object -First 1
+    if ($archItem -and -not $archItem.Ready) {
+        Write-Host "Archipelago was not found at $(Protect-LogText $archItem.Detail)."
+        Write-Host 'If Archipelago is installed somewhere else, pick its ArchipelagoLauncher.exe.'
+        $pickedLauncher = Select-ArchipelagoViaDialog
+        if ($pickedLauncher) {
+            $script:ArchipelagoRoot = Split-Path $pickedLauncher -Parent
+            Save-DependencyPathsToState
+            Write-Ok "Archipelago - $($script:ArchipelagoRoot)"
+        } else {
+            Write-Warn 'No ArchipelagoLauncher.exe selected.'
+        }
+    }
     while ($true) {
         $results = Get-PrerequisiteStatus $SelectedGames
         Show-Prerequisites $results

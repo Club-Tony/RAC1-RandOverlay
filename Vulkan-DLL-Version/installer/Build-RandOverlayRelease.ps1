@@ -108,12 +108,17 @@ if errorlevel 1 goto :stagefailed
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%RANDOVERLAY_EXTRACTOR%" -SelfPath "%RANDOVERLAY_SELF%" -ExpectedSha256 "$sha"
 set "RANDOVERLAY_EXIT=%ERRORLEVEL%"
 del "%RANDOVERLAY_EXTRACTOR%" >nul 2>&1
-if not "%RANDOVERLAY_BUNDLE_NOLAUNCH%"=="1" pause
+if "%RANDOVERLAY_BUNDLE_NOLAUNCH%"=="1" exit /b %RANDOVERLAY_EXIT%
+echo.
+echo Press Enter to exit.
+pause >nul
 exit /b %RANDOVERLAY_EXIT%
 :stagefailed
 echo Could not stage the embedded installer. The BAT may be incomplete or corrupt.
 del "%RANDOVERLAY_EXTRACTOR%" >nul 2>&1
-pause
+echo.
+echo Press Enter to exit.
+pause >nul
 exit /b 9
 #===EXTRACTOR===
 "@
