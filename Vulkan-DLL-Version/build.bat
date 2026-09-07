@@ -23,15 +23,18 @@ set IMGUI=deps\imgui
 set GCC=g++
 set GCC_C=gcc
 set AR=ar
+set WINDRES=windres
 if exist C:\mingw64\bin\g++.exe set GCC=C:\mingw64\bin\g++
 if exist C:\mingw64\bin\gcc.exe set GCC_C=C:\mingw64\bin\gcc
 :: ar must come from the SAME x64 toolchain: a bare 'ar' can resolve to the
 :: 32-bit MinGW.org binutils, whose archive the x86_64 ld cannot index
 :: ("archive has no index"), breaking the fallback link.
 if exist C:\mingw64\bin\ar.exe set AR=C:\mingw64\bin\ar
+if exist C:\mingw64\bin\windres.exe set WINDRES=C:\mingw64\bin\windres
 if not "%RANDOVERLAY_GCC%"=="" set GCC=%RANDOVERLAY_GCC%
 if not "%RANDOVERLAY_GCC_C%"=="" set GCC_C=%RANDOVERLAY_GCC_C%
 if not "%RANDOVERLAY_AR%"=="" set AR=%RANDOVERLAY_AR%
+if not "%RANDOVERLAY_WINDRES%"=="" set WINDRES=%RANDOVERLAY_WINDRES%
 
 :: --- Arch guard: a 32-bit DLL cannot load into RPCS3/PCSX2 (both x64) --------
 set GMACHINE=
@@ -49,12 +52,42 @@ echo.
 
 if not exist build mkdir build
 
+:: --- Version metadata -------------------------------------------------------
+:: VERSION at the repository root is the single source of truth; the release
+:: workflow already refuses to build when it disagrees with the tag. A signed
+:: binary has to carry a product name and version, so the layer gets a
+:: VERSIONINFO resource built from the same numbers.
+set RANDOVERLAY_VERSION=
+if exist ..\VERSION for /f "usebackq delims=" %%v in ("..\VERSION") do set RANDOVERLAY_VERSION=%%v
+if "%RANDOVERLAY_VERSION%"=="" (
+    echo.
+    echo   [ERROR] Could not read ..\VERSION. The layer would ship without
+    echo   version metadata, which release signing requires.
+    exit /b 1
+)
+for /f "tokens=1,2,3 delims=." %%a in ("%RANDOVERLAY_VERSION%") do (
+    set VER_MAJOR=%%a
+    set VER_MINOR=%%b
+    set VER_PATCH=%%c
+)
+if "%VER_MINOR%"=="" set VER_MINOR=0
+if "%VER_PATCH%"=="" set VER_PATCH=0
+echo Version:   %RANDOVERLAY_VERSION%  (windres: %WINDRES%)
+"%WINDRES%" -DRANDOVERLAY_VERSION_MAJOR=%VER_MAJOR% -DRANDOVERLAY_VERSION_MINOR=%VER_MINOR% -DRANDOVERLAY_VERSION_PATCH=%VER_PATCH% src\version.rc -o build\version.o
+if errorlevel 1 (
+    echo.
+    echo   [ERROR] windres failed. Install the x86_64-w64-mingw32 binutils or
+    echo   point RANDOVERLAY_WINDRES at windres.exe from the same toolchain.
+    exit /b 1
+)
+echo.
+
 :: === [1/4] RandOverlay implicit layer (PRIMARY) ==============================
 echo [1/4] Building RandOverlay_layer.dll (implicit layer + ImGui)...
 "%GCC%" -shared %BUILD_MODE% -std=c++17 ^
     -DWIN32_LEAN_AND_MEAN -DVK_NO_PROTOTYPES -DIMGUI_IMPL_VULKAN_NO_PROTOTYPES ^
     -I "%VKSDK%\Include" -I %IMGUI% -I %IMGUI%\backends -I src ^
-    src\layer.cpp ^
+    src\layer.cpp build\version.o ^
     %IMGUI%\imgui.cpp %IMGUI%\imgui_draw.cpp %IMGUI%\imgui_tables.cpp %IMGUI%\imgui_widgets.cpp ^
     %IMGUI%\backends\imgui_impl_vulkan.cpp ^
     -o build\RandOverlay_layer.dll ^
@@ -112,5 +145,8 @@ goto end
 :fail
 echo.
 echo   BUILD FAILED - check errors above
+if "%NO_PAUSE%"=="0" pause
+exit /b 1
+
 :end
 if "%NO_PAUSE%"=="0" pause
