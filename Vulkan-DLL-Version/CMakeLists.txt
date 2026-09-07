@@ -8,7 +8,12 @@
 #   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 #
 cmake_minimum_required(VERSION 3.16)
-project(RandOverlay VERSION 0.1.0 LANGUAGES CXX)
+
+# VERSION at the repository root is the single source of truth, shared with
+# build.bat and the release workflow, so a dev build and a release agree.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION" RANDOVERLAY_VERSION)
+string(STRIP "${RANDOVERLAY_VERSION}" RANDOVERLAY_VERSION)
+project(RandOverlay VERSION ${RANDOVERLAY_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -109,6 +114,12 @@ if(WIN32)
     # manifest and installer keep working.
     set_target_properties(RandOverlayLayer PROPERTIES
         PREFIX "" OUTPUT_NAME "RandOverlay_layer")
+    enable_language(RC)
+    target_sources(RandOverlayLayer PRIVATE src/version.rc)
+    # One semicolon-separated value: PROPERTIES takes a single value per property,
+    # and separate strings would be read as further property names.
+    set_source_files_properties(src/version.rc PROPERTIES COMPILE_DEFINITIONS
+        "RANDOVERLAY_VERSION_MAJOR=${PROJECT_VERSION_MAJOR};RANDOVERLAY_VERSION_MINOR=${PROJECT_VERSION_MINOR};RANDOVERLAY_VERSION_PATCH=${PROJECT_VERSION_PATCH}")
     target_compile_definitions(RandOverlayLayer PRIVATE WIN32_LEAN_AND_MEAN)
     target_link_libraries(RandOverlayLayer PRIVATE kernel32 user32 shell32 advapi32)
     if(MINGW)

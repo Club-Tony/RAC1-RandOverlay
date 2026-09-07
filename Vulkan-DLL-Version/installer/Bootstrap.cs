@@ -6,6 +6,18 @@ using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
 
+// Release signing requires every signed artifact to carry a product name and
+// version. Build-RandOverlayRelease.ps1 substitutes the tokens from the
+// repository VERSION file, the same source the layer resource uses.
+[assembly: AssemblyTitle("RandOverlay Setup")]
+[assembly: AssemblyProduct("RandOverlay")]
+[assembly: AssemblyCompany("Club-Tony")]
+[assembly: AssemblyCopyright("Copyright (c) 2026 Club-Tony. MIT licensed.")]
+[assembly: AssemblyDescription("Installs the RandOverlay Vulkan layer for Ratchet & Clank Archipelago play.")]
+[assembly: AssemblyVersion("__VERSION_NUMERIC__")]
+[assembly: AssemblyFileVersion("__VERSION_NUMERIC__")]
+[assembly: AssemblyInformationalVersion("__VERSION_FULL__")]
+
 internal static class RandOverlayBootstrap
 {
     private const string ExpectedPayloadSha256 = "__PAYLOAD_SHA256__";

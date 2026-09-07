@@ -223,6 +223,14 @@ if ($Format -contains 'Exe') {
     if (-not (Test-Path -LiteralPath $csc)) { throw 'The in-box C# compiler is unavailable; build with -Format Bat,Zip or install .NET Framework tools.' }
     $bootstrapSource = Get-Content -LiteralPath (Join-Path $InstallerRoot 'Bootstrap.cs') -Raw
     $bootstrapSource = $bootstrapSource.Replace('__PAYLOAD_SHA256__', (Get-Sha $zipPath))
+    # AssemblyVersion accepts digits and dots only, so a prerelease suffix such as
+    # 0.2.0-beta goes to AssemblyInformationalVersion and the numeric part is padded
+    # to the four fields the attribute expects.
+    $numeric = ([regex]::Match($Version, '^\d+(\.\d+){0,3}')).Value
+    if (-not $numeric) { throw "Version '$Version' does not start with a number." }
+    while (($numeric -split '\.').Count -lt 4) { $numeric = "$numeric.0" }
+    $bootstrapSource = $bootstrapSource.Replace('__VERSION_NUMERIC__', $numeric)
+    $bootstrapSource = $bootstrapSource.Replace('__VERSION_FULL__', $Version)
     $generatedSource = Join-Path $work 'Bootstrap.generated.cs'
     Set-Content -LiteralPath $generatedSource -Value $bootstrapSource -Encoding UTF8
     $exePath = Join-Path $OutputRoot "RandOverlay-Setup-v$Version.exe"

@@ -47,6 +47,7 @@ jobs:
           RANDOVERLAY_GCC: C:\msys64\mingw64\bin\g++.exe
           RANDOVERLAY_GCC_C: C:\msys64\mingw64\bin\gcc.exe
           RANDOVERLAY_AR: C:\msys64\mingw64\bin\ar.exe
+          RANDOVERLAY_WINDRES: C:\msys64\mingw64\bin\windres.exe
         run: build.bat --no-pause
 
       - name: Run unit and repository validation
