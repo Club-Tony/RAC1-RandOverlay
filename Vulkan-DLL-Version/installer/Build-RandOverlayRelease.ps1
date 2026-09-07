@@ -200,7 +200,7 @@ Windows may show Unknown Publisher or SmartScreen warnings while this project is
 unsigned or has not established reputation. Download only from the official
 Club-Tony/RAC1-RandOverlay GitHub Releases page and verify SHA256SUMS.txt.
 
-The setup defaults to RAC1/RPCS3 and can select RAC1, RAC2, and/or RAC3.
+The setup installs the RAC1 (RPCS3) overlay. Run it again later to reinstall or uninstall.
 It installs per-user under %LOCALAPPDATA%\RandOverlay and sends no telemetry.
 "@
 Set-Content -LiteralPath (Join-Path $packageRoot 'README-INSTALL.txt') -Value $installText -Encoding UTF8

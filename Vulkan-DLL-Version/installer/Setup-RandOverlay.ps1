@@ -37,7 +37,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
 # Exit codes:
-#   0  success (including an interactive "Save and exit")
+#   0  success (including the interactive "Close" choice)
 #   1  unhandled error
 #   2  required prerequisites are missing
 #   3  an action needs explicit confirmation (InstallStackComponent over an unknown file or an
@@ -310,22 +310,30 @@ function Find-Executable([string[]]$Names, [string[]]$Candidates) {
 }
 
 function Get-Rpcs3SearchRoots {
+    # Common places a portable RPCS3 zip gets extracted. Both the profile-relative
+    # folders and the shell known folders are listed because OneDrive Known Folder
+    # Move points Desktop/Documents at %USERPROFILE%\OneDrive\... on many Windows 11 PCs.
+    $shellDesktop = [Environment]::GetFolderPath('Desktop')
+    $shellDocuments = [Environment]::GetFolderPath('MyDocuments')
     $roots = [System.Collections.Generic.List[string]]::new()
     foreach ($r in @(
         (Join-Path $env:USERPROFILE 'Downloads'),
         (Join-Path $env:USERPROFILE 'Desktop'),
         (Join-Path $env:USERPROFILE 'Desktop\Games'),
         (Join-Path $env:USERPROFILE 'Documents'),
+        $shellDesktop,
+        $(if ($shellDesktop) { Join-Path $shellDesktop 'Games' }),
+        $shellDocuments,
         (Join-Path $env:LOCALAPPDATA 'Programs'),
         $env:ProgramFiles,
         ${env:ProgramFiles(x86)}
     )) {
-        if ($r -and (Test-Path -LiteralPath $r -PathType Container)) {
-            $full = Get-FullPath $r
-            if ($roots -notcontains $full) { $roots.Add($full) }
-        }
+        if (-not $r) { continue }
+        if (-not (Test-Path -LiteralPath $r -PathType Container)) { continue }
+        $full = Get-FullPath $r
+        if ($roots -notcontains $full) { $roots.Add($full) }
     }
-    @($roots)
+    ,$roots.ToArray()
 }
 
 function Get-Rpcs3Candidates([string[]]$SearchRoots) {
@@ -366,17 +374,19 @@ function Get-Rpcs3Candidates([string[]]$SearchRoots) {
     @($hits)
 }
 
-function Select-Rpcs3ViaDialog {
+function Select-FileViaDialog([string]$FileName, [string]$Title, [string]$Filter) {
+    # Runs a WinForms OpenFileDialog in a separate STA process and returns the
+    # chosen full path, or $null when the user cancels.
     $scriptText = @(
         'Add-Type -AssemblyName System.Windows.Forms',
         '$d = New-Object System.Windows.Forms.OpenFileDialog',
-        '$d.Filter = ''RPCS3|rpcs3.exe|Executables|*.exe|All files|*.*''',
-        '$d.FileName = ''rpcs3.exe''',
-        '$d.Title = ''Select rpcs3.exe''',
+        ('$d.Filter = ''' + $Filter + ''''),
+        ('$d.FileName = ''' + $FileName + ''''),
+        ('$d.Title = ''' + $Title + ''''),
         '$d.CheckFileExists = $true',
         'if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.FileName) }'
     ) -join "`r`n"
-    $temp = Join-Path ([IO.Path]::GetTempPath()) ('RandOverlay-Rpcs3Dialog-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    $temp = Join-Path ([IO.Path]::GetTempPath()) ('RandOverlay-FileDialog-' + [guid]::NewGuid().ToString('N') + '.ps1')
     try {
         Set-Content -LiteralPath $temp -Value $scriptText -Encoding ASCII
         $chosen = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $temp
@@ -385,6 +395,14 @@ function Select-Rpcs3ViaDialog {
         if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
     }
     $null
+}
+
+function Select-Rpcs3ViaDialog {
+    Select-FileViaDialog 'rpcs3.exe' 'Select rpcs3.exe' 'RPCS3|rpcs3.exe|Executables|*.exe|All files|*.*'
+}
+
+function Select-ArchipelagoViaDialog {
+    Select-FileViaDialog 'ArchipelagoLauncher.exe' 'Select ArchipelagoLauncher.exe' 'Archipelago Launcher|ArchipelagoLauncher.exe|Executables|*.exe|All files|*.*'
 }
 
 function Set-ResolvedRpcs3Path([string]$Path) {
@@ -406,21 +424,24 @@ function Resolve-Rpcs3InteractiveChoice {
             Write-Host "[$($i + 1)] $($hits[$i].Path)$ver"
         }
         Write-Host '[B] Browse for rpcs3.exe'
-        Write-Host ''
-        $answer = (Read-Host 'Selection').Trim()
-        if ($answer -match '^(?i)b$') {
-            $picked = Select-Rpcs3ViaDialog
-            if ($picked) { Set-ResolvedRpcs3Path $picked; return $true }
-            Write-Warn 'No rpcs3.exe selected.'
-            return $false
+        Write-Host '[X] Exit without installing'
+        while ($true) {
+            Write-Host ''
+            $answer = (Read-Host 'Selection').Trim()
+            if ($answer -match '^(?i)x$') { return $false }
+            if ($answer -match '^(?i)b$') {
+                $picked = Select-Rpcs3ViaDialog
+                if ($picked) { Set-ResolvedRpcs3Path $picked; return $true }
+                Write-Warn 'No rpcs3.exe selected. Pick a number, B to browse again, or X to exit.'
+                continue
+            }
+            $number = 0
+            if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $hits.Count) {
+                Set-ResolvedRpcs3Path $hits[$number - 1].Path
+                return $true
+            }
+            Write-Warn "Type a number from 1 to $($hits.Count), B to browse, or X to exit."
         }
-        $number = 0
-        if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $hits.Count) {
-            Set-ResolvedRpcs3Path $hits[$number - 1].Path
-            return $true
-        }
-        Write-Warn 'Unknown selection.'
-        return $false
     }
     Write-Host 'RPCS3 was not found in Downloads, Desktop, Documents, or Program Files.'
     $picked = Select-Rpcs3ViaDialog
@@ -485,14 +506,27 @@ function Show-Prerequisites([object[]]$Results) {
 }
 
 function Resolve-PrerequisitesInteractive([string[]]$SelectedGames) {
-    # One pass, no menu: RPCS3 is searched for (and can be browsed to once);
-    # anything still missing ends the run with a download link and a
-    # "run this installer again" instruction. Repair / Configure / Uninstall
+    # One pass, no menu: RPCS3 and Archipelago are searched for (each can be
+    # browsed to once); anything still missing ends the run with a download link
+    # and a "run this installer again" instruction. Repair / Configure / Uninstall
     # stay reachable through -Action for scripts and tests.
+    $probe = @(Get-PrerequisiteStatus $SelectedGames)
     if ($SelectedGames -contains 'RAC1') {
-        $probe = @(Get-PrerequisiteStatus $SelectedGames)
         $rpcs3Item = $probe | Where-Object { $_.Id -eq 'rpcs3' } | Select-Object -First 1
         if ($rpcs3Item -and -not $rpcs3Item.Ready) { [void](Resolve-Rpcs3InteractiveChoice) }
+    }
+    $archItem = $probe | Where-Object { $_.Id -eq 'archipelago' } | Select-Object -First 1
+    if ($archItem -and -not $archItem.Ready) {
+        Write-Host "Archipelago was not found at $(Protect-LogText $archItem.Detail)."
+        Write-Host 'If Archipelago is installed somewhere else, pick its ArchipelagoLauncher.exe.'
+        $pickedLauncher = Select-ArchipelagoViaDialog
+        if ($pickedLauncher) {
+            $script:ArchipelagoRoot = Split-Path $pickedLauncher -Parent
+            Save-DependencyPathsToState
+            Write-Ok "Archipelago - $($script:ArchipelagoRoot)"
+        } else {
+            Write-Warn 'No ArchipelagoLauncher.exe selected.'
+        }
     }
     $results = Get-PrerequisiteStatus $SelectedGames
     Show-Prerequisites $results
@@ -745,7 +779,11 @@ function Invoke-Repair {
             $script:ExitCode = 2
             return
         }
-        if (-not $NonInteractive -and -not (Resolve-PrerequisitesInteractive $selected)) { return }
+        if (-not $NonInteractive -and -not (Resolve-PrerequisitesInteractive $selected)) {
+            Write-Warn 'Nothing was reinstalled yet. Your choices are saved for the next run.'
+            $script:ExitCode = 2
+            return
+        }
     }
     $payload = Resolve-PayloadRoot
     $metadata = Test-Payload $payload
@@ -850,6 +888,7 @@ function Invoke-CheckForUpdates {
 }
 
 function Invoke-Interactive {
+    Test-EmulatorsStopped
     $state = Get-State
     if (-not $state -or $state.status -ne 'installed') {
         $script:Games = Read-GameSelection
@@ -896,7 +935,11 @@ if (-not $LoadOnly) {
         }
     } catch {
         Write-Log ("Failed: {0}" -f $_.Exception.Message) 'ERROR'
-        throw
+        if ($Action -ne 'Interactive') { throw }
+        # Double-click users get one plain line, not a PowerShell stack dump.
+        Write-Host ''
+        Write-Host "[STOP] $($_.Exception.Message)" -ForegroundColor Red
+        $script:ExitCode = 1
     }
     Write-Log "Exit code $script:ExitCode"
     if ($script:ExitCode -ne 0) { exit $script:ExitCode }

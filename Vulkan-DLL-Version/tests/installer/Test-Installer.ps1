@@ -91,8 +91,10 @@ try {
     $rerunClosePassed = $rerunClose.ExitCode -eq 0 -and $rerunClose.Output -match 'already installed' -and $rerunClose.Output -match '\[3\] Close' -and $rerunClose.Output -notmatch 'PopTracker|Check for updates'
     if (-not $rerunClosePassed) { Write-Host $rerunClose.Output }
     Assert-True $rerunClosePassed 're-run on an installed machine shows Reinstall / Uninstall / Close only'
+    $installedDll = Join-Path $interactiveRoot 'current\RandOverlay_layer.dll'
+    [IO.File]::WriteAllText($installedDll, 'tampered')
     $rerunRepair = Invoke-InteractiveSetup $installedSetup @('-InstallRoot',$interactiveRoot,'-RegistryPath',$RegistryPath,'-SkipPrerequisiteChecks') "1`n"
-    $rerunRepairPassed = $rerunRepair.ExitCode -eq 0 -and (Test-Path -LiteralPath (Join-Path $interactiveRoot 'current\RandOverlay_layer.dll'))
+    $rerunRepairPassed = $rerunRepair.ExitCode -eq 0 -and (Test-Path -LiteralPath $installedDll) -and ((Get-FileHash -LiteralPath $installedDll -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $layerDll -Algorithm SHA256).Hash)
     if (-not $rerunRepairPassed) { Write-Host $rerunRepair.Output }
     Assert-True $rerunRepairPassed 're-run Reinstall repairs the layer in place'
     Invoke-Setup $installedSetup @('-Action','Uninstall','-InstallRoot',$interactiveRoot,'-RegistryPath',$RegistryPath,'-NonInteractive') | Out-Null
@@ -146,8 +148,12 @@ $duped = @(Get-Rpcs3Candidates @($Downloads, $Downloads))
     $emptyArch = Join-Path $RunRoot 'EmptyArchipelago'
     New-Item -ItemType Directory -Path $emptyArch -Force | Out-Null
     # Interactive first run with a missing prerequisite: no menu, a download link, exit 2, nothing registered.
+    # The launcher exists but the RAC1 apworld does not, so no file dialog is opened by the run.
+    $noWorldsArch = Join-Path $RunRoot 'ArchipelagoNoWorlds'
+    New-Item -ItemType Directory -Path $noWorldsArch -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $noWorldsArch 'ArchipelagoLauncher.exe'), '')
     $missingRoot = Join-Path $RunRoot 'MissingLocalAppData\RandOverlay'
-    $missingRun = Invoke-InteractiveSetup $setup @('-InstallRoot',$missingRoot,'-RegistryPath',$RegistryPath,'-ArchipelagoRoot',$emptyArch,'-RPCS3Path',$fakeRpcs3,'-VulkanLoaderPath',$fakeVulkan) ""
+    $missingRun = Invoke-InteractiveSetup $setup @('-InstallRoot',$missingRoot,'-RegistryPath',$RegistryPath,'-ArchipelagoRoot',$noWorldsArch,'-RPCS3Path',$fakeRpcs3,'-VulkanLoaderPath',$fakeVulkan) ""
     $missingPassed = $missingRun.ExitCode -eq 2 -and $missingRun.Output -match 'run this installer again' -and $missingRun.Output -match 'https://' -and $missingRun.Output -notmatch 'WinGet|Set custom path' -and -not (Test-Path -LiteralPath (Join-Path $missingRoot 'current\RandOverlay_layer.dll'))
     if (-not $missingPassed) { Write-Host "Missing-prerequisite run exit: $($missingRun.ExitCode)"; Write-Host $missingRun.Output }
     Assert-True $missingPassed 'missing prerequisite ends the first run with a link and exit 2'
