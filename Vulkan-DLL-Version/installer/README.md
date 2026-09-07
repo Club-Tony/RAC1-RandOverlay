@@ -10,11 +10,17 @@ End users do not need Git, MinGW, the Vulkan SDK, ImGui, or MinHook.
 .\Build-RandOverlayRelease.ps1 -Format Bat,Zip,Exe
 ```
 
-Outputs are written to `Vulkan-DLL-Version\dist`: a primary self-contained BAT, the
-transparent release ZIP, an optional EXE bootstrapper, and `SHA256SUMS.txt`. The ZIP has fixed
-entry ordering and timestamps. Both bootstrappers carry that exact ZIP, verify its SHA-256
-before extraction, and launch the same setup script. The BAT clearly explains this handoff.
-ZIP users can double-click `Install-RandOverlay.bat` after extraction.
+Outputs are written to `Vulkan-DLL-Version\dist`: a primary self-contained BAT
+(`RandOverlay-Setup-vX.Y.Z.bat`), the transparent release ZIP, an optional EXE, and
+`SHA256SUMS.txt`. The ZIP has fixed entry ordering and timestamps. The BAT is the same
+ZIP Base64-encoded after a `#===PAYLOAD===` marker; a `#===EXTRACTOR===` script decodes
+it, checks the SHA-256 of the **decoded ZIP**, extracts to `%TEMP%`, and runs
+`Setup-RandOverlay.ps1`. Copy `dist\RandOverlay-Setup-vX.Y.Z.bat` over the **repository
+root** `Install-RandOverlay.bat` when shipping so GitHub users can download one file.
+
+ZIP users extract and double-click the **inner** `Install-RandOverlay.bat` (this folder's
+copy) that sits next to `Setup-RandOverlay.ps1`. That inner BAT is only a launcher. The
+optional EXE embeds the same ZIP; it is unsigned and not the primary download.
 
 ## Setup actions
 

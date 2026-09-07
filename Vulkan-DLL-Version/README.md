@@ -90,27 +90,61 @@ Register it for the current user — no registry, no admin:
   a standard search directory. Two discovery routes for one layer make the
   loader load it twice and crash the host.
 
-## Install / uninstall (release package)
+## One-click installer
 
-For the one-file path, download and double-click `RandOverlay-Setup-vX.Y.Z.bat`. It embeds,
-SHA-256 verifies, and temporarily extracts the same versioned release ZIP before handing off
-to guided setup.
+End users should not assemble this folder. The download is a **single BAT at the
+repository root**: `Install-RandOverlay.bat`. Double-click it from anywhere (Downloads,
+Desktop, a USB stick). It does not need `Setup-RandOverlay.ps1` sitting next to it.
 
-For the transparent package path, extract the official release ZIP and double-click:
+That root file is generated, not hand-edited. `installer/Build-RandOverlayRelease.ps1`
+builds a deterministic ZIP of the compiled layer DLL plus the setup scripts, then wraps
+the ZIP in the BAT:
 
-```bat
-Install-RandOverlay.bat
-```
+1. A short CMD stub (`title RAC RandOverlay Setup`).
+2. A `#===EXTRACTOR===` marker and a small PowerShell extractor.
+3. A `#===PAYLOAD===` marker and the ZIP as **Base64**. Base64 is packaging so the ZIP
+   can live inside a text `.bat`. It is not encryption or a signature.
+4. The **SHA-256 of the decoded ZIP bytes** is baked into the stub (not a hash of the
+   Base64 text).
 
-Advanced users can invoke the setup engine directly:
+On double-click the BAT:
+
+- writes the extractor to `%TEMP%` and runs it against itself (`%~f0`)
+- finds `#===PAYLOAD===`, Base64-decodes the ZIP, hashes it
+- **stops before touching the disk** if the marker is missing, the Base64 is truncated,
+  or the SHA-256 does not match (exit `9`)
+- extracts to a unique temp folder, clears Mark-of-the-Web on those files, runs
+  `Setup-RandOverlay.ps1`, then deletes that temp folder
+
+`Setup-RandOverlay.ps1` is the real wizard: pick games (RAC1 default), check only the
+dependencies those games need, install per-user under `%LOCALAPPDATA%\RandOverlay`,
+register one Vulkan implicit layer, copy the setup engine + `lib\` so Status / Repair /
+Uninstall keep working. It does not bundle Lawrence, firmware, the game, Archipelago, or
+RPCS3. No telemetry.
+
+Two different files share the name `Install-RandOverlay.bat`:
+
+| File | What it is |
+| --- | --- |
+| **Repo root** `Install-RandOverlay.bat` | One-click carrier. **This is the file to download.** |
+| `installer/Install-RandOverlay.bat` | Tiny launcher **inside** the ZIP. Only starts `Setup-RandOverlay.ps1` in the same folder. Useless by itself. |
+
+The transparent ZIP (`RandOverlay-Vulkan-vX.Y.Z.zip`) is the same payload without Base64,
+for people who want to inspect files. After extracting it, run the *inner* `Install-RandOverlay.bat`
+that sits next to `Setup-RandOverlay.ps1`.
+
+Rebuild the one-click BAT after a layer or installer change:
 
 ```powershell
-powershell -NoProfile -File .\Setup-RandOverlay.ps1
+.\build.bat --no-pause
+.\installer\Build-RandOverlayRelease.ps1 -Format Bat,Zip
+copy .\dist\RandOverlay-Setup-vX.Y.Z.bat ..\Install-RandOverlay.bat
 ```
 
-Guided setup defaults to RAC1 and permits any combination of RAC1, RAC2, and RAC3. It
-installs to `%LOCALAPPDATA%\RandOverlay`, checks only dependencies needed by the selected
-games, and registers one canonical per-user manifest. Re-running setup is safe.
+An optional setup EXE can embed the same ZIP; it is unsigned and is not the primary
+download.
+
+## Install / uninstall (after the wizard has run)
 
 ```powershell
 .\Setup-RandOverlay.ps1 -Action Status
@@ -119,9 +153,6 @@ games, and registers one canonical per-user manifest. Re-running setup is safe.
 .\Setup-RandOverlay.ps1 -Action CheckForUpdates
 .\Setup-RandOverlay.ps1 -Action Uninstall
 ```
-
-No telemetry is sent. Dependency links and update checks occur only after an explicit user
-action. The optional EXE embeds and verifies the same ZIP before launching setup.
 
 ## Developer registration helper
 
@@ -233,9 +264,10 @@ Message: <event text>
 
 ## Files
 
-- `installer/Install-RandOverlay.bat` - double-click release ZIP entrypoint.
+- `../Install-RandOverlay.bat` (repo root) - generated one-click BAT: Base64-embedded ZIP + SHA-256 check. Download this.
+- `installer/Install-RandOverlay.bat` - inner ZIP launcher only (runs `Setup-RandOverlay.ps1` beside it).
 - `installer/Setup-RandOverlay.ps1` - guided install and maintenance engine.
-- `installer/Build-RandOverlayRelease.ps1` - deterministic self-contained BAT/ZIP/EXE release builder.
+- `installer/Build-RandOverlayRelease.ps1` - builds the ZIP and wraps it as the root one-click BAT.
 - `tests/installer/Test-Installer.ps1` - isolated installer lifecycle regression.
 
 - `src/layer.cpp` — the implicit layer (present interception + ImGui text).
