@@ -15,6 +15,9 @@ $RegistryPath = "HKCU:\$TestHiveRelative\ImplicitLayers"
 $UninstallRoot = "HKCU:\$TestHiveRelative\Uninstall"
 $Failures = [System.Collections.Generic.List[string]]::new()
 . (Join-Path $PSScriptRoot 'TestCommon.ps1')
+# Scratch installs must not wait on the live RPCS3 process. Cleared again before
+# the "refuse while rpcs3 is running" assertion.
+$env:RANDOVERLAY_ALLOW_RUNNING_EMULATOR = '1'
 
 function Get-Sha([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant() }
 function Write-Bytes([string]$Path, [int]$Seed, [int]$Length) {
@@ -347,11 +350,21 @@ try {
     $fakeLawrence = Join-Path $RunRoot 'Lawrence\Lawrence.exe'
     New-Item -ItemType Directory -Path (Split-Path $fakeLawrence -Parent) -Force | Out-Null
     Set-Content -LiteralPath $fakeLawrence -Value 'fixture lawrence' -Encoding ASCII
+    $lawrenceLive = [bool](Get-Process -Name Lawrence -ErrorAction SilentlyContinue)
     $status = Invoke-Setup $installed (@('-Action','Status','-Json','-LawrencePath',$fakeLawrence) + $common) | ConvertFrom-Json
     $lawrenceRow = Get-Row $status.stack 'lawrence'
-    Assert-True ($lawrenceRow.Status -eq 'detected' -and $lawrenceRow.Optional -and $lawrenceRow.Detail -match 'Launch menu') 'a user-supplied Lawrence build is detected and stays optional'
+    if ($lawrenceLive) {
+        Assert-True ($lawrenceRow.Status -eq 'running' -and $lawrenceRow.Optional) 'a running Lawrence process is reported as running'
+    } else {
+        Assert-True ($lawrenceRow.Status -eq 'detected' -and $lawrenceRow.Optional -and $lawrenceRow.Detail -match 'Launch menu') 'a user-supplied Lawrence build is detected and stays optional'
+    }
     $status = Invoke-Setup $installed (@('-Action','Status','-Json') + $common) | ConvertFrom-Json
-    Assert-True ((Get-Row $status.stack 'lawrence').Status -eq 'not running') 'Lawrence is never assumed present without a supplied path'
+    $lawrenceWithoutPath = Get-Row $status.stack 'lawrence'
+    if ($lawrenceLive) {
+        Assert-True ($lawrenceWithoutPath.Status -eq 'running') 'a running Lawrence process is still visible without -LawrencePath'
+    } else {
+        Assert-True ($lawrenceWithoutPath.Status -eq 'not running') 'Lawrence is never assumed present without a supplied path'
+    }
 
     # --- Launch is interactive only ------------------------------------------------------------
     Invoke-Setup $installed (@('-Action','Launch','-NonInteractive') + $common) 1 | Out-Null
@@ -378,6 +391,7 @@ try {
     Assert-True ((Get-Sha $configPath) -eq $configShaBefore) 'StackRollback restores the original config.yml bytes'
 
     # --- The fix refuses to run while RPCS3 is running -----------------------------------------
+    Remove-Item Env:RANDOVERLAY_ALLOW_RUNNING_EMULATOR -ErrorAction SilentlyContinue
     $fakeProcDir = Join-Path $RunRoot 'fakeproc'
     New-Item -ItemType Directory -Path $fakeProcDir -Force | Out-Null
     $fakeProcExe = Join-Path $fakeProcDir 'rpcs3.exe'
@@ -390,6 +404,7 @@ try {
     } finally {
         Stop-Process -Id $fakeProcess.Id -Force -ErrorAction SilentlyContinue
         $fakeProcess.WaitForExit(10000) | Out-Null
+        $env:RANDOVERLAY_ALLOW_RUNNING_EMULATOR = '1'
     }
 
     # --- Uninstall keeps tracker content unless -RemoveTrackerData -----------------------------

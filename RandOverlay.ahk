@@ -47,6 +47,8 @@ if (!archLauncherFound) {
     SetTitleMatchMode, RegEx
     archLauncherFound := WinExist("Archipelago.*Client")
     SetTitleMatchMode, 2
+    if (!archLauncherFound)
+        archLauncherFound := WinExist("Rac3 Client")
 }
 if (!archLauncherFound) {
     MsgBox, 4, Archipelago Overlay, Archipelago Launcher is not running. Launch it?

@@ -111,6 +111,12 @@ int main(int argc, char** argv) {
     CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2,RAC3", noTitles,
                                {"Ratchet & Clank 2 Client"}) == "RAC2",
           "Archipelago client title is a fallback RAC2 signal");
+    CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2,RAC3", noTitles,
+                               {"Archipelago Ratchet & Clank 2 Client 0.6.7"}) == "RAC2",
+          "versioned RAC2 client title still matches");
+    CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2,RAC3", noTitles,
+                               {"Rac3 Client v0.4.1 | Archipelago 0.6.7"}) == "RAC3",
+          "Rac3 Client title matches without ratchet & clank 3");
     CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2,RAC3",
                                {"Ratchet & Clank 2", "Ratchet & Clank 3"}, noTitles).empty(),
           "conflicting PCSX2 titles never guess a preset");

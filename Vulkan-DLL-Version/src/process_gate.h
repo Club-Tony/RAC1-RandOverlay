@@ -80,7 +80,8 @@ inline int presetMatchesInTitles(const std::vector<std::string>& titles,
         if (rac3Enabled &&
             (title.find("ratchet & clank 3") != std::string::npos ||
              title.find("ratchet and clank 3") != std::string::npos ||
-             title.find("up your arsenal") != std::string::npos))
+             title.find("up your arsenal") != std::string::npos ||
+             title.find("rac3 client") != std::string::npos))
             matches |= 2;
     }
     return matches;

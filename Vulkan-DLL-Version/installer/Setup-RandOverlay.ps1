@@ -309,6 +309,125 @@ function Find-Executable([string[]]$Names, [string[]]$Candidates) {
     $null
 }
 
+function Get-Rpcs3SearchRoots {
+    $roots = [System.Collections.Generic.List[string]]::new()
+    foreach ($r in @(
+        (Join-Path $env:USERPROFILE 'Downloads'),
+        (Join-Path $env:USERPROFILE 'Desktop'),
+        (Join-Path $env:USERPROFILE 'Desktop\Games'),
+        (Join-Path $env:USERPROFILE 'Documents'),
+        (Join-Path $env:LOCALAPPDATA 'Programs'),
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)}
+    )) {
+        if ($r -and (Test-Path -LiteralPath $r -PathType Container)) {
+            $full = Get-FullPath $r
+            if ($roots -notcontains $full) { $roots.Add($full) }
+        }
+    }
+    @($roots)
+}
+
+function Get-Rpcs3Candidates([string[]]$SearchRoots) {
+    $raw = [System.Collections.Generic.List[string]]::new()
+    $scoped = [bool]$SearchRoots
+    if (-not $scoped) {
+        $paths = Get-DependencyPaths
+        if ($paths.rpcs3Path) { $raw.Add([string]$paths.rpcs3Path) }
+        if ($RPCS3Path) { $raw.Add([string]$RPCS3Path) }
+        Get-Process rpcs3 -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.Path) { $raw.Add([string]$_.Path) }
+        }
+    }
+    $roots = if ($scoped) { @($SearchRoots) } else { @(Get-Rpcs3SearchRoots) }
+    foreach ($root in $roots) {
+        if (-not $root -or -not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+        try {
+            Get-ChildItem -LiteralPath $root -Filter 'rpcs3.exe' -File -Recurse -Depth 5 -ErrorAction SilentlyContinue |
+                ForEach-Object { $raw.Add($_.FullName) }
+        } catch { }
+    }
+    $seen = @{}
+    $hits = [System.Collections.Generic.List[object]]::new()
+    foreach ($candidate in $raw) {
+        if (-not $candidate -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        if ([IO.Path]::GetFileName($candidate) -ine 'rpcs3.exe') { continue }
+        $full = Get-FullPath $candidate
+        $key = $full.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $ver = $null
+        try {
+            $product = [string](Get-Item -LiteralPath $full).VersionInfo.ProductVersion
+            if ($product -and $product -notmatch '^0\.0\.0(\.0)?$') { $ver = $product.Trim() }
+        } catch { }
+        $hits.Add([pscustomobject]@{ Path=$full; Version=$ver })
+    }
+    @($hits)
+}
+
+function Select-Rpcs3ViaDialog {
+    $scriptText = @(
+        'Add-Type -AssemblyName System.Windows.Forms',
+        '$d = New-Object System.Windows.Forms.OpenFileDialog',
+        '$d.Filter = ''RPCS3|rpcs3.exe|Executables|*.exe|All files|*.*''',
+        '$d.FileName = ''rpcs3.exe''',
+        '$d.Title = ''Select rpcs3.exe''',
+        '$d.CheckFileExists = $true',
+        'if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.FileName) }'
+    ) -join "`r`n"
+    $temp = Join-Path ([IO.Path]::GetTempPath()) ('RandOverlay-Rpcs3Dialog-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    try {
+        Set-Content -LiteralPath $temp -Value $scriptText -Encoding ASCII
+        $chosen = & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $temp
+        if ($chosen -and (Test-Path -LiteralPath ([string]$chosen) -PathType Leaf)) { return (Get-FullPath $chosen) }
+    } finally {
+        if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+    }
+    $null
+}
+
+function Set-ResolvedRpcs3Path([string]$Path) {
+    $script:RPCS3Path = Get-FullPath $Path
+    Save-DependencyPathsToState
+    Write-Ok "RPCS3 - $($script:RPCS3Path)"
+}
+
+function Resolve-Rpcs3InteractiveChoice {
+    $hits = @(Get-Rpcs3Candidates)
+    if ($hits.Count -eq 1) {
+        Set-ResolvedRpcs3Path $hits[0].Path
+        return $true
+    }
+    if ($hits.Count -gt 1) {
+        Write-Step 'Several RPCS3 copies were found'
+        for ($i = 0; $i -lt $hits.Count; $i++) {
+            $ver = if ($hits[$i].Version) { " ($($hits[$i].Version))" } else { '' }
+            Write-Host "[$($i + 1)] $($hits[$i].Path)$ver"
+        }
+        Write-Host '[B] Browse for rpcs3.exe'
+        $answer = (Read-Host 'Selection').Trim()
+        if ($answer -match '^(?i)b$') {
+            $picked = Select-Rpcs3ViaDialog
+            if ($picked) { Set-ResolvedRpcs3Path $picked; return $true }
+            Write-Warn 'No rpcs3.exe selected.'
+            return $false
+        }
+        $number = 0
+        if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $hits.Count) {
+            Set-ResolvedRpcs3Path $hits[$number - 1].Path
+            return $true
+        }
+        Write-Warn 'Unknown selection.'
+        return $false
+    }
+    Write-Host 'RPCS3 was not found in Downloads, Desktop, Documents, or Program Files.'
+    $picked = Select-Rpcs3ViaDialog
+    if ($picked) { Set-ResolvedRpcs3Path $picked; return $true }
+    Write-Warn 'No rpcs3.exe selected.'
+    $false
+}
+
 function Test-WinGetPackage([string]$Id) {
     if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) { return $false }
     $output = & winget.exe list --id $Id --exact --accept-source-agreements 2>$null | Out-String
@@ -332,7 +451,15 @@ function Get-PrerequisiteStatus([string[]]$SelectedGames) {
 
     if ($SelectedGames -contains 'RAC1') {
         $rpcs3 = Find-Executable @('rpcs3.exe') @($dependencyPaths.rpcs3Path,(Join-Path $env:LOCALAPPDATA 'Programs\RPCS3\rpcs3.exe'),(Join-Path $env:ProgramFiles 'RPCS3\rpcs3.exe'))
-        $results.Add([pscustomobject]@{ Id='rpcs3'; Name='RPCS3 (selected by RAC1)'; Required=$true; Ready=[bool]$rpcs3; Detail=$(if($rpcs3){$rpcs3}else{'Not found in known locations'}); Url='https://rpcs3.net/download'; AutoInstall=$null })
+        if (-not $rpcs3) {
+            $autoHits = @(Get-Rpcs3Candidates)
+            if ($autoHits.Count -eq 1) {
+                $script:RPCS3Path = $autoHits[0].Path
+                $rpcs3 = $autoHits[0].Path
+            }
+        }
+        $rpcs3Detail = if ($rpcs3) { $rpcs3 } else { 'Not found in Downloads, Desktop, Documents, or Program Files' }
+        $results.Add([pscustomobject]@{ Id='rpcs3'; Name='RPCS3 (RAC1)'; Required=$true; Ready=[bool]$rpcs3; Detail=$rpcs3Detail; Url='https://rpcs3.net/download'; AutoInstall=$null })
     }
     if (($SelectedGames -contains 'RAC2') -or ($SelectedGames -contains 'RAC3')) {
         $pcsx2 = Find-Executable @('pcsx2-qt.exe','pcsx2.exe') @($dependencyPaths.pcsx2Path,(Join-Path $env:LOCALAPPDATA 'Programs\PCSX2\pcsx2-qt.exe'),(Join-Path $env:ProgramFiles 'PCSX2\pcsx2-qt.exe'))
@@ -357,7 +484,16 @@ function Show-Prerequisites([object[]]$Results) {
 }
 
 function Resolve-PrerequisitesInteractive([string[]]$SelectedGames) {
+    $rpcs3Prompted = $false
     while ($true) {
+        if ($SelectedGames -contains 'RAC1' -and -not $rpcs3Prompted) {
+            $probe = @(Get-PrerequisiteStatus $SelectedGames)
+            $rpcs3Item = $probe | Where-Object { $_.Id -eq 'rpcs3' } | Select-Object -First 1
+            if ($rpcs3Item -and -not $rpcs3Item.Ready) {
+                $rpcs3Prompted = $true
+                [void](Resolve-Rpcs3InteractiveChoice)
+            }
+        }
         $results = Get-PrerequisiteStatus $SelectedGames
         Show-Prerequisites $results
         $missing = @($results | Where-Object { $_.Required -and -not $_.Ready })
@@ -388,13 +524,16 @@ function Resolve-PrerequisitesInteractive([string[]]$SelectedGames) {
                 for ($i=0; $i -lt $pathItems.Count; $i++) { Write-Host "[$($i+1)] $($pathItems[$i].Name)" }
                 $number = 0
                 if ([int]::TryParse((Read-Host 'Dependency number'), [ref]$number) -and $number -ge 1 -and $number -le $pathItems.Count) {
-                    $entered = (Read-Host 'Exact executable or Archipelago folder path').Trim('"')
                     $item = $pathItems[$number-1]
+                    if ($item.Id -eq 'rpcs3') {
+                        [void](Resolve-Rpcs3InteractiveChoice)
+                        continue
+                    }
+                    $entered = (Read-Host 'Exact executable or Archipelago folder path').Trim('"')
                     if ($item.Id -eq 'archipelago') {
                         if ([IO.Path]::GetFileName($entered) -ieq 'ArchipelagoLauncher.exe') { $entered = Split-Path $entered -Parent }
                         $script:ArchipelagoRoot = $entered
-                    } elseif ($item.Id -eq 'rpcs3') { $script:RPCS3Path = $entered }
-                    elseif ($item.Id -eq 'pcsx2') { $script:PCSX2Path = $entered }
+                    } elseif ($item.Id -eq 'pcsx2') { $script:PCSX2Path = $entered }
                     Save-DependencyPathsToState
                 }
             }
@@ -424,8 +563,9 @@ foreach ($libName in @('StackManifest.ps1', 'StackDetect.ps1', 'StackActions.ps1
 . (Join-Path $script:SetupLibRoot 'StackActions.ps1')
 
 function Test-EmulatorsStopped {
-    $running = @(Get-Process rpcs3,pcsx2-qt,pcsx2 -ErrorAction SilentlyContinue)
-    if ($running.Count -gt 0) { throw 'Close RPCS3 and PCSX2 before changing the Vulkan layer.' }
+    if ($env:RANDOVERLAY_ALLOW_RUNNING_EMULATOR -eq '1') { return }
+    $running = @(Get-Process rpcs3 -ErrorAction SilentlyContinue)
+    if ($running.Count -gt 0) { throw 'Close RPCS3 before continuing with this installer.' }
 }
 
 function Set-GeneralIniValue([string]$Content, [string]$Name, [string]$Value) {
@@ -688,63 +828,8 @@ function Invoke-Uninstall {
 }
 
 function Read-GameSelection {
-    $items = @(
-        [pscustomobject]@{ Game='RAC1'; Emulator='RPCS3' },
-        [pscustomobject]@{ Game='RAC2'; Emulator='PCSX2' },
-        [pscustomobject]@{ Game='RAC3'; Emulator='PCSX2' }
-    )
-
-    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
-        Write-Host 'Select games (comma-separated; default RAC1):'
-        for ($i = 0; $i -lt $items.Count; $i++) { Write-Host "[$($i + 1)] $($items[$i].Game) - $($items[$i].Emulator)" }
-        # Redirected Windows PowerShell input can prefix the first token with
-        # a UTF-8 BOM. Strip it so selection 1 is not silently discarded.
-        $answer = (Read-Host 'Selection').Trim() -replace '^[^0-9A-Za-z]+', ''
-        if (-not $answer) { return @('RAC1') }
-        $map = @{ '1'='RAC1'; '2'='RAC2'; '3'='RAC3'; 'RAC1'='RAC1'; 'RAC2'='RAC2'; 'RAC3'='RAC3' }
-        return Normalize-Games @($answer -split ',' | ForEach-Object { $map[$_.Trim().ToUpperInvariant()] } | Where-Object { $_ } | Select-Object -Unique)
-    }
-
-    $checked = @($true, $false, $false)
-    $cursor = 0
-    Write-Step 'Choose games'
-    Write-Host 'This installer contains and verifies the current RandOverlay release ZIP automatically.' -ForegroundColor DarkGray
-    Write-Host 'Use Up/Down to move, Space to toggle, and Enter to continue.' -ForegroundColor DarkGray
-    $menuTop = [Console]::CursorTop
-    $cursorWasVisible = [Console]::CursorVisible
-    [Console]::CursorVisible = $false
-
-    try {
-        while ($true) {
-            [Console]::SetCursorPosition(0, $menuTop)
-            for ($i = 0; $i -lt $items.Count; $i++) {
-                $pointer = if ($i -eq $cursor) { '>' } else { ' ' }
-                $mark = if ($checked[$i]) { 'x' } else { ' ' }
-                $line = " $pointer [$mark] $($items[$i].Game) - $($items[$i].Emulator)"
-                $padding = ' ' * [Math]::Max(0, [Console]::WindowWidth - $line.Length - 1)
-                Write-Host ($line + $padding) -ForegroundColor $(if ($i -eq $cursor) { 'Cyan' } else { 'Gray' })
-            }
-            $selectedCount = @($checked | Where-Object { $_ }).Count
-            $status = " Selected: $selectedCount  "
-            Write-Host ($status + (' ' * [Math]::Max(0, [Console]::WindowWidth - $status.Length - 1))) -ForegroundColor DarkGray
-
-            $key = [Console]::ReadKey($true).Key
-            switch ($key) {
-                'UpArrow'   { $cursor = ($cursor + $items.Count - 1) % $items.Count }
-                'DownArrow' { $cursor = ($cursor + 1) % $items.Count }
-                'Spacebar'  { $checked[$cursor] = -not $checked[$cursor] }
-                'Enter' {
-                    if ($selectedCount -gt 0) {
-                        Write-Host ''
-                        return Normalize-Games @($(for ($i = 0; $i -lt $items.Count; $i++) { if ($checked[$i]) { $items[$i].Game } }))
-                    }
-                    [Console]::Beep()
-                }
-            }
-        }
-    } finally {
-        [Console]::CursorVisible = $cursorWasVisible
-    }
+    Write-Host 'This installer is for RAC1 (RPCS3).' -ForegroundColor DarkGray
+    ,@('RAC1')
 }
 
 function Invoke-Preflight {
