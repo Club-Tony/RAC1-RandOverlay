@@ -85,7 +85,17 @@ try {
     $interactiveState = Get-Content -LiteralPath $interactiveStatePath -Raw | ConvertFrom-Json
     Assert-True (@($interactiveState.enabledGames).Count -eq 1 -and @($interactiveState.enabledGames)[0] -eq 'RAC1') 'interactive install records RAC1 only'
     Assert-True ([bool](Select-String -LiteralPath (Join-Path $interactiveRoot 'RandOverlay.ini') -Pattern '^EnabledPresets=RAC1$')) 'interactive install enables RAC1 only'
-    Invoke-Setup (Join-Path $interactiveRoot 'Setup-RandOverlay.ps1') @('-Action','Uninstall','-InstallRoot',$interactiveRoot,'-RegistryPath',$RegistryPath,'-NonInteractive') | Out-Null
+    # A second double-click on an installed machine offers only Reinstall / Uninstall / Close.
+    $installedSetup = Join-Path $interactiveRoot 'Setup-RandOverlay.ps1'
+    $rerunClose = Invoke-InteractiveSetup $installedSetup @('-InstallRoot',$interactiveRoot,'-RegistryPath',$RegistryPath,'-SkipPrerequisiteChecks') "3`n"
+    $rerunClosePassed = $rerunClose.ExitCode -eq 0 -and $rerunClose.Output -match 'already installed' -and $rerunClose.Output -match '\[3\] Close' -and $rerunClose.Output -notmatch 'PopTracker|Check for updates'
+    if (-not $rerunClosePassed) { Write-Host $rerunClose.Output }
+    Assert-True $rerunClosePassed 're-run on an installed machine shows Reinstall / Uninstall / Close only'
+    $rerunRepair = Invoke-InteractiveSetup $installedSetup @('-InstallRoot',$interactiveRoot,'-RegistryPath',$RegistryPath,'-SkipPrerequisiteChecks') "1`n"
+    $rerunRepairPassed = $rerunRepair.ExitCode -eq 0 -and (Test-Path -LiteralPath (Join-Path $interactiveRoot 'current\RandOverlay_layer.dll'))
+    if (-not $rerunRepairPassed) { Write-Host $rerunRepair.Output }
+    Assert-True $rerunRepairPassed 're-run Reinstall repairs the layer in place'
+    Invoke-Setup $installedSetup @('-Action','Uninstall','-InstallRoot',$interactiveRoot,'-RegistryPath',$RegistryPath,'-NonInteractive') | Out-Null
 
     $preflightArgs = @('-Action','Preflight','-Games','RAC1','-ArchipelagoRoot',$fakeArch,'-RPCS3Path',$fakeRpcs3,'-VulkanLoaderPath',$fakeVulkan,'-InstallRoot',$InstallRoot,'-RegistryPath',$RegistryPath,'-Json')
     $preflightJson = Invoke-Setup $setup $preflightArgs
@@ -135,6 +145,13 @@ $duped = @(Get-Rpcs3Candidates @($Downloads, $Downloads))
     $pendingRoot = Join-Path $RunRoot 'PendingLocalAppData\RandOverlay'
     $emptyArch = Join-Path $RunRoot 'EmptyArchipelago'
     New-Item -ItemType Directory -Path $emptyArch -Force | Out-Null
+    # Interactive first run with a missing prerequisite: no menu, a download link, exit 2, nothing registered.
+    $missingRoot = Join-Path $RunRoot 'MissingLocalAppData\RandOverlay'
+    $missingRun = Invoke-InteractiveSetup $setup @('-InstallRoot',$missingRoot,'-RegistryPath',$RegistryPath,'-ArchipelagoRoot',$emptyArch,'-RPCS3Path',$fakeRpcs3,'-VulkanLoaderPath',$fakeVulkan) ""
+    $missingPassed = $missingRun.ExitCode -eq 2 -and $missingRun.Output -match 'run this installer again' -and $missingRun.Output -match 'https://' -and $missingRun.Output -notmatch 'WinGet|Set custom path' -and -not (Test-Path -LiteralPath (Join-Path $missingRoot 'current\RandOverlay_layer.dll'))
+    if (-not $missingPassed) { Write-Host "Missing-prerequisite run exit: $($missingRun.ExitCode)"; Write-Host $missingRun.Output }
+    Assert-True $missingPassed 'missing prerequisite ends the first run with a link and exit 2'
+
     Invoke-Setup $setup @('-Action','Install','-Games','RAC1','-InstallRoot',$pendingRoot,'-RegistryPath',$RegistryPath,'-ArchipelagoRoot',$emptyArch,'-RPCS3Path',$fakeRpcs3,'-VulkanLoaderPath',$fakeVulkan,'-NonInteractive') 2 | Out-Null
     $pendingState = Get-Content -LiteralPath (Join-Path $pendingRoot 'setup-state.json') -Raw | ConvertFrom-Json
     Assert-True ($pendingState.status -eq 'pending-prerequisites' -and @(Get-RegistryNames).Count -eq 0) 'non-interactive install with missing prerequisites exits 2 and registers nothing'

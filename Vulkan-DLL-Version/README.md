@@ -117,12 +117,20 @@ On double-click the BAT:
 - extracts to a unique temp folder, clears Mark-of-the-Web on those files, runs
   `Setup-RandOverlay.ps1`, then deletes that temp folder
 
-`Setup-RandOverlay.ps1` is the real wizard: pick games (RAC1 default), check only the
-dependencies those games need, install per-user under `%LOCALAPPDATA%\RandOverlay`,
-register one Vulkan implicit layer at
-`HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers` (no admin), and copy the setup
-engine + `lib\` so Status / Repair / Uninstall keep working. It does not bundle
-Lawrence, firmware, the game, Archipelago, or RPCS3. No telemetry.
+`Setup-RandOverlay.ps1` is the real installer: RAC1 only, no game picker. It checks
+the few things RAC1 needs, installs per-user under `%LOCALAPPDATA%\RandOverlay`,
+registers one Vulkan implicit layer at
+`HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers` (no admin), and copies the setup
+engine + `lib\` so `-Action Status / Repair / Uninstall` keep working from a
+shell. It does not bundle Lawrence, firmware, the game, Archipelago, or RPCS3.
+No telemetry.
+
+Running the BAT again on a machine that already has it installed asks one thing:
+**Reinstall**, **Uninstall**, or **Close**. Reinstall re-checks RPCS3 and
+re-registers the overlay in place. There is no maintenance menu on the
+double-click path; the stack extras (APWorld, PopTracker, PKG, RPCS3 network
+fix, Launch) are `-Action` switches for now and are not part of this release's
+one-click scope.
 
 Install once. After that the overlay loads by itself the next time you start RPCS3
 with the **Vulkan** renderer (RPCS3's usual Windows default) — no Startup entry and
@@ -130,15 +138,16 @@ no extra overlay process. Keep the Archipelago **Text Client** running while you
 so there is a log to read. RAC2/RAC3 remain experimental and are not this edition's
 supported path on `main`.
 
-If RPCS3, PCSX2, or Archipelago is missing or in an unusual folder, the wizard
-does **not** guess. It prints `[MISSING]`, offers Recheck, an official download
-link, **[P] Set custom path** (browse to `rpcs3.exe` / `pcsx2-qt.exe` /
-Archipelago's folder), or Save and exit and Repair later. It only auto-looks in
-`%LOCALAPPDATA%\Programs\RPCS3`, `%ProgramFiles%\RPCS3`, the same for PCSX2,
-`C:\ProgramData\Archipelago`, PATH, and a *currently running* emulator process.
-A portable copy on the Desktop is found via [P] (or if RPCS3 is already open).
-Firmware, the ISO/PKG, and the multiplayer client are reported on the stack rows
-but do not block installing the layer.
+RPCS3 is portable, so the installer looks for `rpcs3.exe` a few folders deep under
+Downloads, Desktop, Desktop\Games, Documents, `%LOCALAPPDATA%\Programs`, both
+Program Files roots, a *currently running* RPCS3, and the path saved by an
+earlier run. One hit is used as-is. Several hits become a numbered list with a
+Browse option. No hit opens a normal Windows file dialog for `rpcs3.exe`. If you
+cancel that dialog, or Archipelago is missing, the run stops there: it prints the
+official download link, saves what it already found, and tells you to install
+the missing piece and run the installer again. Nothing is registered until
+everything RAC1 needs is present. Firmware, the ISO/PKG, and the multiplayer
+client are reported but never block installing the layer.
 
 Two different files share the name `Install-RandOverlay.bat`:
 

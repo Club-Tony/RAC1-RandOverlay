@@ -406,6 +406,7 @@ function Resolve-Rpcs3InteractiveChoice {
             Write-Host "[$($i + 1)] $($hits[$i].Path)$ver"
         }
         Write-Host '[B] Browse for rpcs3.exe'
+        Write-Host ''
         $answer = (Read-Host 'Selection').Trim()
         if ($answer -match '^(?i)b$') {
             $picked = Select-Rpcs3ViaDialog
@@ -484,63 +485,28 @@ function Show-Prerequisites([object[]]$Results) {
 }
 
 function Resolve-PrerequisitesInteractive([string[]]$SelectedGames) {
-    $rpcs3Prompted = $false
-    while ($true) {
-        if ($SelectedGames -contains 'RAC1' -and -not $rpcs3Prompted) {
-            $probe = @(Get-PrerequisiteStatus $SelectedGames)
-            $rpcs3Item = $probe | Where-Object { $_.Id -eq 'rpcs3' } | Select-Object -First 1
-            if ($rpcs3Item -and -not $rpcs3Item.Ready) {
-                $rpcs3Prompted = $true
-                [void](Resolve-Rpcs3InteractiveChoice)
-            }
-        }
-        $results = Get-PrerequisiteStatus $SelectedGames
-        Show-Prerequisites $results
-        $missing = @($results | Where-Object { $_.Required -and -not $_.Ready })
-        if ($missing.Count -eq 0) { return $true }
-        $autoInstallLabel = "Install $(@($script:WinGetPackages.Keys) -join '/') with WinGet"
-        Write-Host "`n[R] Recheck  [O] Open official page  [P] Set custom path  [I] $autoInstallLabel  [S] Save and exit"
-        switch ((Read-Host 'Selection').Trim().ToUpperInvariant()) {
-            'R' { continue }
-            'O' {
-                for ($i=0; $i -lt $missing.Count; $i++) { Write-Host "[$($i+1)] $($missing[$i].Name)" }
-                $number = 0
-                if ([int]::TryParse((Read-Host 'Dependency number'), [ref]$number) -and $number -ge 1 -and $number -le $missing.Count) { Start-Process $missing[$number-1].Url }
-            }
-            'I' {
-                $autoItem = $missing | Where-Object { $_.AutoInstall -and ($script:AutoInstallAllowlist -contains $_.AutoInstall) } | Select-Object -First 1
-                if (-not $autoItem) { Write-Warn 'No missing allowlisted dependency supports automatic installation.'; continue }
-                $packageId = [string]$autoItem.AutoInstall
-                $packageName = @($script:WinGetPackages.GetEnumerator() | Where-Object { $_.Value -eq $packageId } | ForEach-Object { $_.Key })[0]
-                if ((Read-Host "Install $packageName from WinGet? [y/N]") -match '^(?i)y(es)?$') {
-                    Write-Log "WinGet install requested: $packageId"
-                    & winget.exe install --id $packageId --exact --accept-source-agreements --accept-package-agreements
-                    if ($LASTEXITCODE -ne 0) { Write-Warn "WinGet exited $LASTEXITCODE." }
-                }
-            }
-            'P' {
-                $pathItems = @($missing | Where-Object { $_.Id -in @('archipelago','rpcs3','pcsx2') })
-                if ($pathItems.Count -eq 0) { Write-Warn 'No missing dependency accepts a custom path.'; continue }
-                for ($i=0; $i -lt $pathItems.Count; $i++) { Write-Host "[$($i+1)] $($pathItems[$i].Name)" }
-                $number = 0
-                if ([int]::TryParse((Read-Host 'Dependency number'), [ref]$number) -and $number -ge 1 -and $number -le $pathItems.Count) {
-                    $item = $pathItems[$number-1]
-                    if ($item.Id -eq 'rpcs3') {
-                        [void](Resolve-Rpcs3InteractiveChoice)
-                        continue
-                    }
-                    $entered = (Read-Host 'Exact executable or Archipelago folder path').Trim('"')
-                    if ($item.Id -eq 'archipelago') {
-                        if ([IO.Path]::GetFileName($entered) -ieq 'ArchipelagoLauncher.exe') { $entered = Split-Path $entered -Parent }
-                        $script:ArchipelagoRoot = $entered
-                    } elseif ($item.Id -eq 'pcsx2') { $script:PCSX2Path = $entered }
-                    Save-DependencyPathsToState
-                }
-            }
-            'S' { Save-DependencyPathsToState; return $false }
-            default { Write-Warn 'Unknown selection.' }
-        }
+    # One pass, no menu: RPCS3 is searched for (and can be browsed to once);
+    # anything still missing ends the run with a download link and a
+    # "run this installer again" instruction. Repair / Configure / Uninstall
+    # stay reachable through -Action for scripts and tests.
+    if ($SelectedGames -contains 'RAC1') {
+        $probe = @(Get-PrerequisiteStatus $SelectedGames)
+        $rpcs3Item = $probe | Where-Object { $_.Id -eq 'rpcs3' } | Select-Object -First 1
+        if ($rpcs3Item -and -not $rpcs3Item.Ready) { [void](Resolve-Rpcs3InteractiveChoice) }
     }
+    $results = Get-PrerequisiteStatus $SelectedGames
+    Show-Prerequisites $results
+    $missing = @($results | Where-Object { $_.Required -and -not $_.Ready })
+    if ($missing.Count -eq 0) { return $true }
+    Save-DependencyPathsToState
+    Write-Host ''
+    foreach ($item in $missing) {
+        Write-Host "Download $($item.Name):" -ForegroundColor Yellow
+        Write-Host "  $($item.Url)"
+    }
+    Write-Host ''
+    Write-Host 'Install what is missing, then run this installer again.' -ForegroundColor Yellow
+    $false
 }
 
 # -------------------------------------------------------------------------
@@ -722,7 +688,8 @@ function Invoke-Install {
                 return
             }
         } elseif (-not (Resolve-PrerequisitesInteractive $selected)) {
-            Write-Warn 'Progress saved. Run Setup or Repair when prerequisites are ready.'
+            Write-Warn 'Nothing was installed yet. Your choices are saved for the next run.'
+            $script:ExitCode = 2
             return
         }
     }
@@ -890,25 +857,19 @@ function Invoke-Interactive {
         Invoke-Install
         return
     }
-    Write-Host '[1] Status  [2] Repair  [3] Configure  [4] Check for updates  [5] Uninstall'
-    Write-Host '[6] Install RAC1 APWorld  [7] Install PopTracker  [8] Download multiplayer PKG'
-    Write-Host '[9] Set RPCS3 network to Connected  [10] Launch or host'
+    # Already installed: keep the double-click path to three choices. Status,
+    # Configure, updates and the stack extras remain available via -Action.
+    Write-Host "RandOverlay $($state.installedVersion) is already installed." -ForegroundColor Cyan
+    Write-Host "Location: $(Protect-LogText $InstallRoot)" -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host '[1] Reinstall  (re-check RPCS3 and re-register the overlay)'
+    Write-Host '[2] Uninstall'
+    Write-Host '[3] Close'
+    Write-Host ''
     switch ((Read-Host 'Selection').Trim()) {
-        '1' { Invoke-Status }
-        '2' { Invoke-Repair }
-        '3' {
-            $script:Games = Read-GameSelection
-            $script:ActiveGame = if ($script:Games -contains [string]$state.activeGame) { [string]$state.activeGame } else { $script:Games[0] }
-            Invoke-Configure
-        }
-        '4' { Invoke-CheckForUpdates }
-        '5' { if ((Read-Host 'Uninstall RandOverlay? [y/N]') -match '^(?i)y(es)?$') { Invoke-Uninstall } }
-        '6' { $script:Component = 'rac1-apworld'; Invoke-InstallStackComponent }
-        '7' { $script:Component = 'poptracker'; Invoke-InstallStackComponent }
-        '8' { $script:Component = 'rac1-multiplayer'; Invoke-InstallStackComponent }
-        '9' { Invoke-ConfigureRpcs3Network }
-        '10' { Invoke-Launch }
-        default { Write-Warn 'Unknown selection.' }
+        '1' { Invoke-Repair }
+        '2' { if ((Read-Host 'Uninstall RandOverlay? [y/N]') -match '^(?i)y(es)?$') { Invoke-Uninstall } }
+        default { }
     }
 }
 
