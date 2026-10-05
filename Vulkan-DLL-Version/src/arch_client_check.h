@@ -6,9 +6,9 @@
  * an Archipelago client writing logs, so when the overlay activates and no
  * Archipelago process is found, offer to start the launcher (Yes/No prompt).
  *
- * The prompt is Windows-only. On Linux the caller just logs the condition —
- * see promptIfNotRunning() for why. Suppress the prompt entirely with
- * RANDOVERLAY_NO_PROMPT=1 (used by tests).
+ * The prompt is Windows-only and shown at most once per emulator process. On
+ * Linux the caller just logs the condition — see promptIfNotRunning() for why.
+ * Suppress the prompt entirely with RANDOVERLAY_NO_PROMPT=1 (used by tests).
  */
 #include "platform.h"
 #include <string>
@@ -16,6 +16,7 @@
 #ifdef _WIN32
   #include <windows.h>
   #include <shellapi.h>
+  #include <cstdio>
 #endif
 
 namespace roarch {
@@ -32,7 +33,29 @@ struct PromptContext {
     std::string launcherExe;
     std::string presetName;      // e.g. "RAC1"
     std::string clientComponent; // e.g. "Ratchet & Clank 2 Client"
+    HMODULE     self;            // reference that keeps this DLL mapped
 };
+
+// True the first time it is called in this process, false ever after.
+//
+// A static flag is not enough: the Vulkan loader unloads the layer whenever the
+// emulator destroys its instance, and RPCS3 does that on every boot — including
+// the exitspawn restart the RAC1 multiplayer loader (BORD00001) performs within
+// a second of booting, which used to stack two prompts. A named mutex keyed by
+// PID outlives the unload; its handle is deliberately never closed, so it lasts
+// exactly as long as the emulator process.
+inline bool claimPromptForProcess() {
+    char name[64];
+    snprintf(name, sizeof(name), "Local\\RandOverlay.Prompted.%lu",
+             (unsigned long)GetCurrentProcessId());
+    HANDLE h = CreateMutexA(nullptr, FALSE, name);
+    if (!h) return true;  // cannot tell; err on the side of telling the user
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(h);
+        return false;
+    }
+    return true;
+}
 
 inline DWORD WINAPI promptThread(LPVOID param) {
     PromptContext* ctx = (PromptContext*)param;
@@ -58,7 +81,12 @@ inline DWORD WINAPI promptThread(LPVOID param) {
             ShellExecuteA(nullptr, "open", ctx->launcherExe.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         }
     }
+    HMODULE self = ctx->self;
     delete ctx;
+    // The dialog can outlive the instance that raised it (an exitspawn reboot
+    // unloads the layer mid-prompt), so the thread holds its own reference to
+    // the DLL and drops it only on the way out.
+    if (self) FreeLibraryAndExitThread(self, 0);
     return 0;
 }
 
@@ -78,10 +106,17 @@ inline bool promptIfNotRunning(const std::string& launcherExe,
     if (roplat::envEquals("RANDOVERLAY_NO_PROMPT", "1")) return false;
 
 #ifdef _WIN32
-    PromptContext* ctx = new PromptContext{launcherExe, presetName, clientComponent};
+    if (!claimPromptForProcess()) return false;
+    HMODULE self = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                       reinterpret_cast<LPCSTR>(&promptThread), &self);
+    PromptContext* ctx = new PromptContext{launcherExe, presetName, clientComponent, self};
     HANDLE t = CreateThread(nullptr, 0, promptThread, ctx, 0, nullptr);
     if (t) CloseHandle(t);
-    else   delete ctx;
+    else {
+        delete ctx;
+        if (self) FreeLibrary(self);
+    }
 #else
     (void)launcherExe; (void)presetName; (void)clientComponent;
 #endif

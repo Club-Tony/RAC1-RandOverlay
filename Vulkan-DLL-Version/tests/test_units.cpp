@@ -368,6 +368,10 @@ int main(int argc, char** argv) {
     setEnvVar("RANDOVERLAY_NO_PROMPT", "1");
     CHECK(roarch::promptIfNotRunning("", "RAC1", "") == roarch::isArchipelagoRunning(),
           "promptIfNotRunning reports the running state without prompting");
+#ifdef _WIN32
+    CHECK(roarch::claimPromptForProcess(), "first prompt claim in a process succeeds");
+    CHECK(!roarch::claimPromptForProcess(), "a second prompt claim in the same process is refused");
+#endif
 
     printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

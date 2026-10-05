@@ -179,7 +179,8 @@ Any other game (Demon's Souls in RPCS3, say) leaves the layer idle — no banner
 no prompt — and `layer_debug.log` records the titles it saw. A custom RPCS3 window-title format
 must keep `%T` or `%t` for RAC1 to be recognised.
 
-If Archipelago is not running when the overlay activates, a one-time prompt offers:
+If Archipelago is not running when the overlay activates, a prompt offers — once per
+emulator session, including across the restart the RAC1 multiplayer loader performs on boot:
 **Yes** = launch the automatically detected preset's client directly, **No** = open the Archipelago
 Launcher to pick any installed client (RAC1/RAC2/RAC3/etc.), **Cancel** = do nothing.
 Suppress with `RANDOVERLAY_NO_PROMPT=1`.
