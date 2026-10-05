@@ -61,15 +61,21 @@ inline DWORD WINAPI promptThread(LPVOID param) {
     PromptContext* ctx = (PromptContext*)param;
     // Three-way choice. Game clients are apworld-provided launcher components,
     // so the layer cannot reliably enumerate what's installed — the launcher UI
-    // is the authoritative picker. Yes = the active preset's client directly.
+    // is the authoritative picker. Yes hands the launcher the preset's client
+    // name, and the launcher starts it only if an installed apworld registers
+    // it; otherwise it just opens. RAC1 is that case today: rac1.apworld
+    // registers no launcher client, because the game reaches Archipelago
+    // through Lawrence. So the wording promises an attempt, not a client.
     std::string msg =
         "Archipelago is not running.\n\n"
         "The overlay reads Archipelago client logs, so a client must be "
         "running for messages to appear.\n\n"
-        "Yes  -  launch the " + ctx->presetName + " client:\n"
-        "           \"" + ctx->clientComponent + "\"\n\n"
+        "Yes  -  open the Archipelago Launcher and try to start the " +
+        ctx->presetName + " client:\n"
+        "           \"" + ctx->clientComponent + "\"\n"
+        "           (if no installed apworld provides it, only the launcher opens)\n\n"
         "No  -  open the Archipelago Launcher to pick a client yourself\n"
-        "           (RAC1 / RAC2 / RAC3 / anything else installed)\n\n"
+        "           (Text Client / RAC1 / RAC2 / RAC3 / anything else installed)\n\n"
         "Cancel  -  do nothing";
     int rc = MessageBoxA(nullptr, msg.c_str(), "Archipelago Overlay",
         MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND);

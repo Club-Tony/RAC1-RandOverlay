@@ -170,8 +170,8 @@ signals are missing or conflict, event rendering pauses rather than choosing the
 - `FontFile` — absolute path to a `.ttf`/`.otf`, bypassing family resolution
   entirely. `FontFileWindows` / `FontFileLinux` / `FontFamilyLinux` /
   `FontFallbackLinux` let one shared ini serve both builds
-- `ClientComponent` — which Archipelago Launcher component the launch prompt starts
-  for this preset (RAC1: `Ratchet & Clank Client`, RAC2/RAC3: the R&C game clients)
+- `ClientComponent` — which Archipelago Launcher component the launch prompt asks the
+  launcher to start for this preset (RAC1: `Ratchet & Clank Client`, RAC2/RAC3: the R&C game clients)
 
 The overlay activates only once the emulator's own window title shows a supported game:
 RAC1 in RPCS3 by its `NPEA00385` / `BORD00001` serial or its name, RAC2/RAC3 in PCSX2 by name.
@@ -181,8 +181,11 @@ must keep `%T` or `%t` for RAC1 to be recognised.
 
 If Archipelago is not running when the overlay activates, a prompt offers — once per
 emulator session, including across the restart the RAC1 multiplayer loader performs on boot:
-**Yes** = launch the automatically detected preset's client directly, **No** = open the Archipelago
-Launcher to pick any installed client (RAC1/RAC2/RAC3/etc.), **Cancel** = do nothing.
+**Yes** = open the Archipelago Launcher and try to start the detected preset's `ClientComponent`,
+**No** = open the Archipelago Launcher to pick any installed client (Text Client/RAC1/RAC2/RAC3/etc.),
+**Cancel** = do nothing. The launcher starts the Yes client only if an installed apworld registers it;
+otherwise it just opens. That is the RAC1 case today — `rac1.apworld` registers no launcher client,
+since the game reaches Archipelago through Lawrence — so for RAC1, Yes and No both open the launcher.
 Suppress with `RANDOVERLAY_NO_PROMPT=1`.
 
 Display behavior matches the AHK and PS+WPF runtimes: newest `*.txt` log excluding
