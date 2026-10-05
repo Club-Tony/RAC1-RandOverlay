@@ -69,9 +69,9 @@ int main(int argc, char** argv) {
     CHECK(!rogate::isProcessEnabledForPresets("pcsx2-qt.exe", "RAC1"),
           "RAC1-only selection does not permit PCSX2");
     CHECK(!rogate::needsWindowTitleSignals("rpcs3.exe", "RAC1,RAC2,RAC3"),
-          "RPCS3 preset resolution never waits on desktop window titles");
+          "RPCS3 is never an ambiguous RAC2/RAC3 selection");
     CHECK(!rogate::needsWindowTitleSignals("pcsx2-qt.exe", "RAC1,RAC2"),
-          "single enabled PCSX2 game never waits on desktop window titles");
+          "single enabled PCSX2 game is never an ambiguous RAC2/RAC3 selection");
     CHECK(rogate::needsWindowTitleSignals("pcsx2.exe", "RAC1,RAC2,RAC3"),
           "ambiguous PCSX2 selection requires window title signals");
 
@@ -91,32 +91,63 @@ int main(int argc, char** argv) {
           "suffixless PCSX2 is gated in for RAC3");
     CHECK(!rogate::isProcessEnabledForPresets("vulkaninfo", "RAC1,RAC2,RAC3"),
           "an unrelated Vulkan app is never gated in");
-    CHECK(rogate::detectPreset("rpcs3", "RAC1", {}, {}) == "RAC1",
+    CHECK(rogate::detectPreset("rpcs3", "RAC1", {"Ratchet & Clank [NPEA00385]"}, {}, true) == "RAC1",
           "suffixless RPCS3 still resolves to RAC1");
     CHECK(rogate::needsWindowTitleSignals("pcsx2-qt", "RAC1,RAC2,RAC3"),
           "suffixless ambiguous PCSX2 still reports needing title signals");
 
     printf("[automatic preset detection]\n");
     const std::vector<std::string> noTitles;
-    CHECK(rogate::detectPreset("rpcs3.exe", "RAC1,RAC2,RAC3", noTitles, noTitles) == "RAC1",
-          "RPCS3 deterministically selects RAC1");
-    CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2", noTitles, noTitles) == "RAC2",
-          "single enabled PCSX2 game needs no title signal");
+    const std::vector<std::string> rac1Title = {
+        "FPS: 60.00 | Vulkan | 0.0.38 | Ratchet & Clank [NPEA00385]"};
+    CHECK(rogate::detectPreset("rpcs3.exe", "RAC1,RAC2,RAC3", rac1Title, noTitles, true) == "RAC1",
+          "RPCS3 running RAC1 selects RAC1");
+    CHECK(rogate::detectPreset("rpcs3.exe", "RAC1",
+                               {"FPS: 60.00 | Vulkan | 0.0.38 | Multiplayer [BORD00001]"},
+                               noTitles, true) == "RAC1",
+          "RPCS3 running the rac1-multiplayer PKG selects RAC1");
+    CHECK(rogate::detectPreset("rpcs3.exe", "RAC1",
+                               {"RPCS3 0.0.38-18000 Alpha | master",
+                                "FPS: 30.00 | Vulkan | 0.0.38 | Demon's Souls [BLUS30443]"},
+                               noTitles, true).empty(),
+          "RPCS3 running another game never selects RAC1");
+    CHECK(rogate::detectPreset("rpcs3.exe", "RAC1",
+                               {"RPCS3 0.0.38-18000 Alpha | master"}, noTitles, true).empty(),
+          "RPCS3 with no game booted never selects RAC1");
+    CHECK(rogate::detectPreset("rpcs3.exe", "RAC1",
+                               {"FPS: 60.00 | Vulkan | 0.0.38 | Ratchet & Clank: Going Commando [NPUA80480]"},
+                               noTitles, true).empty(),
+          "RPCS3 running an HD-collection RAC2 never selects RAC1");
+    CHECK(rogate::detectPreset("rpcs3.exe", "RAC2,RAC3", rac1Title, noTitles, true).empty(),
+          "RPCS3 never selects RAC1 when RAC1 is not enabled");
+    CHECK(rogate::detectPreset("rpcs3.exe", "RAC1", noTitles, noTitles, false) == "RAC1",
+          "without readable titles RPCS3 alone selects RAC1");
+    CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2",
+                               {"Ratchet & Clank: Going Commando | PCSX2"}, noTitles, true) == "RAC2",
+          "single enabled PCSX2 game resolves from its window title");
+    CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC2",
+                               {"Shadow of the Colossus | PCSX2"}, noTitles, true).empty(),
+          "single enabled PCSX2 game is not selected while another game runs");
+    CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC3",
+                               {"Ratchet & Clank: Going Commando | PCSX2"}, noTitles, true).empty(),
+          "RAC3-only selection ignores a RAC2 window");
+    CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2", noTitles, noTitles, false) == "RAC2",
+          "without readable titles a single enabled PCSX2 game needs no title signal");
     CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2,RAC3",
-                               {"Ratchet & Clank: Going Commando | PCSX2"}, noTitles) == "RAC2",
+                               {"Ratchet & Clank: Going Commando | PCSX2"}, noTitles, true) == "RAC2",
           "Going Commando window selects RAC2");
     CHECK(rogate::detectPreset("pcsx2.exe", "RAC1,RAC2,RAC3",
-                               {"Ratchet & Clank: Up Your Arsenal | PCSX2"}, noTitles) == "RAC3",
+                               {"Ratchet & Clank: Up Your Arsenal | PCSX2"}, noTitles, true) == "RAC3",
           "Up Your Arsenal window selects RAC3");
     CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2,RAC3", noTitles,
-                               {"Ratchet & Clank 2 Client"}) == "RAC2",
+                               {"Ratchet & Clank 2 Client"}, true) == "RAC2",
           "Archipelago client title is a fallback RAC2 signal");
     CHECK(rogate::detectPreset("pcsx2-qt.exe", "RAC1,RAC2,RAC3",
-                               {"Ratchet & Clank 2", "Ratchet & Clank 3"}, noTitles).empty(),
+                               {"Ratchet & Clank 2", "Ratchet & Clank 3"}, noTitles, true).empty(),
           "conflicting PCSX2 titles never guess a preset");
     // On Linux there are never any title signals, so this is the case the
     // layer's explicit-ActivePreset fallback exists to rescue.
-    CHECK(rogate::detectPreset("pcsx2-qt", "RAC1,RAC2,RAC3", noTitles, noTitles).empty(),
+    CHECK(rogate::detectPreset("pcsx2-qt", "RAC1,RAC2,RAC3", noTitles, noTitles, false).empty(),
           "ambiguous PCSX2 with no title signals refuses to guess");
 
     // ── platform abstraction ──────────────────────────────────────────────
@@ -337,6 +368,10 @@ int main(int argc, char** argv) {
     setEnvVar("RANDOVERLAY_NO_PROMPT", "1");
     CHECK(roarch::promptIfNotRunning("", "RAC1", "") == roarch::isArchipelagoRunning(),
           "promptIfNotRunning reports the running state without prompting");
+#ifdef _WIN32
+    CHECK(roarch::claimPromptForProcess(), "first prompt claim in a process succeeds");
+    CHECK(!roarch::claimPromptForProcess(), "a second prompt claim in the same process is refused");
+#endif
 
     printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

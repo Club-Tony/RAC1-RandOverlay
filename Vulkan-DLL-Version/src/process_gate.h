@@ -86,21 +86,53 @@ inline int presetMatchesInTitles(const std::vector<std::string>& titles,
     return matches;
 }
 
+// True if an RPCS3 window title shows RAC1. RPCS3's default title format
+// ("FPS: %F | %R | %V | %T [%t]") carries both the game name and its serial:
+// NPEA00385 is the game, BORD00001 the rac1-multiplayer PKG that is actually
+// booted for Archipelago. The name match excludes the RAC2/RAC3 titles, which
+// also exist as PS3 HD-collection releases.
+inline bool rac1TitleMatch(const std::vector<std::string>& titles) {
+    for (std::string title : titles) {
+        title = roplat::toLower(title);
+        if (title.find("npea00385") != std::string::npos ||
+            title.find("bord00001") != std::string::npos)
+            return true;
+        bool named = title.find("ratchet & clank") != std::string::npos ||
+                     title.find("ratchet and clank") != std::string::npos;
+        if (named && presetMatchesInTitles({title}, true, true) == 0)
+            return true;
+    }
+    return false;
+}
+
 // Resolve the active game without guessing. The emulator's own title wins;
 // an Archipelago client title is used only when PCSX2 has no game title yet.
+//
+// With titlesAvailable, a preset resolves only once the emulator's window
+// title shows that game, so an emulator running anything else (Demon's Souls
+// in RPCS3, say) never shows the overlay or the Archipelago prompt. Without
+// it (Linux, where other windows' titles are unreadable) the emulator alone
+// decides, as there is nothing better to go on.
 inline std::string detectPreset(const std::string& exeLower,
                                 const std::string& enabledPresets,
                                 const std::vector<std::string>& emulatorTitles,
-                                const std::vector<std::string>& clientTitles) {
+                                const std::vector<std::string>& clientTitles,
+                                bool titlesAvailable) {
     bool rac1 = listContains(enabledPresets, "RAC1");
     bool rac2 = listContains(enabledPresets, "RAC2");
     bool rac3 = listContains(enabledPresets, "RAC3");
 
-    if (listContains("rpcs3.exe", exeLower)) return rac1 ? "RAC1" : "";
+    if (listContains("rpcs3.exe", exeLower)) {
+        if (!rac1) return "";
+        return (!titlesAvailable || rac1TitleMatch(emulatorTitles)) ? "RAC1" : "";
+    }
     if (!listContains("pcsx2-qt.exe,pcsx2.exe", exeLower)) return "";
-    if (rac2 && !rac3) return "RAC2";
-    if (rac3 && !rac2) return "RAC3";
     if (!rac2 && !rac3) return "";
+    if (rac2 != rac3) {
+        const char* only = rac2 ? "RAC2" : "RAC3";
+        if (!titlesAvailable) return only;
+        return presetMatchesInTitles(emulatorTitles, rac2, rac3) != 0 ? only : "";
+    }
 
     int emulatorMatch = presetMatchesInTitles(emulatorTitles, rac2, rac3);
     if (emulatorMatch == 1) return "RAC2";

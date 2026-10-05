@@ -25,6 +25,10 @@
  *   MOCK_RECREATE=<n>       tear down and rebuild the swapchain n times during
  *                           the run, exercising the layer's per-swapchain
  *                           semaphore and command-buffer lifecycle
+ *   MOCK_WINDOW_TITLE=<t>   window title (default "RandOverlay Mock Host").
+ *                           On Windows the layer only activates once the
+ *                           emulator title shows a supported game, e.g.
+ *                           "Ratchet & Clank [NPEA00385]"
  *
  * Auto-exits after MOCK_SECONDS or on window close.
  */
@@ -59,6 +63,11 @@ static bool envIs(const char* name, const char* value) {
     return v && strcmp(v, value) == 0;
 }
 
+static const char* windowTitle() {
+    const char* v = getenv("MOCK_WINDOW_TITLE");
+    return (v && *v) ? v : "RandOverlay Mock Host";
+}
+
 static uint64_t nowMs() {
     using namespace std::chrono;
     return (uint64_t)duration_cast<milliseconds>(
@@ -88,7 +97,7 @@ static void CreateHostWindow(bool borderless) {
     int windowY = borderless ? 0 : 120;
     int windowW = borderless ? GetSystemMetrics(SM_CXSCREEN) : (int)g_extent.width;
     int windowH = borderless ? GetSystemMetrics(SM_CYSCREEN) : (int)g_extent.height;
-    g_hwnd = CreateWindowExA(0, wc.lpszClassName, "RandOverlay Mock Host",
+    g_hwnd = CreateWindowExA(0, wc.lpszClassName, windowTitle(),
                              windowStyle, windowX, windowY, windowW, windowH,
                              nullptr, nullptr, hinst, nullptr);
     ShowWindow(g_hwnd, SW_SHOW);
@@ -153,7 +162,7 @@ static void CreateHostWindow(bool borderless) {
                       0, 0, (uint16_t)width, (uint16_t)height, 0,
                       XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, mask, values);
 
-    const char* title = "RandOverlay Mock Host";
+    const char* title = windowTitle();
     xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, g_win, XCB_ATOM_WM_NAME,
                         XCB_ATOM_STRING, 8, (uint32_t)strlen(title), title);
 

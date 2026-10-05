@@ -172,8 +172,16 @@ function Invoke-MockScenario {
         [switch]$Validation,
         [switch]$Disabled,
         [switch]$Visual,
-        [switch]$ObsActive
+        [switch]$ObsActive,
+        # The layer only activates once the emulator's window title shows a
+        # supported game, so each preset defaults to a matching title.
+        [string]$WindowTitle,
+        # Expect the layer to stay idle: no banner, no event, no Archipelago check.
+        [switch]$ExpectIdle
     )
+    if (-not $WindowTitle) {
+        $WindowTitle = if ($Preset -eq "RAC2") { "Ratchet & Clank: Going Commando | PCSX2" } else { "FPS: 60.00 | Vulkan | Ratchet & Clank [NPEA00385]" }
+    }
 
     $scenarioRoot = Join-Path $RunRoot $Name
     New-Item -ItemType Directory -Path $scenarioRoot -Force | Out-Null
@@ -205,6 +213,7 @@ function Invoke-MockScenario {
         $psi.EnvironmentVariables["MOCK_SECONDS"] = $(if ($Visual) { "10" } else { "3" })
         $psi.EnvironmentVariables["MOCK_STATIC_FRAME"] = "1"
         $psi.EnvironmentVariables["MOCK_WINDOW_MODE"] = $WindowMode
+        $psi.EnvironmentVariables["MOCK_WINDOW_TITLE"] = $WindowTitle
         $psi.EnvironmentVariables.Remove("VK_ADD_IMPLICIT_LAYER_PATH")
         if ($Validation) {
             $psi.EnvironmentVariables["VK_LOADER_LAYERS_ENABLE"] = "VK_LAYER_KHRONOS_validation"
@@ -276,6 +285,12 @@ function Invoke-MockScenario {
             if ($logText -and ($logText -notmatch 'disabled=1' -or $logText -match 'Render resources ready')) {
                 throw "disabled layer was not inert"
             }
+        } elseif ($ExpectIdle) {
+            if ($logText -notmatch 'No supported R&C game in the emulator window title yet' -or
+                $logText -match 'Automatic preset:' -or $logText -match 'Message: ' -or
+                $logText -match 'Archipelago is not running') {
+                throw "layer did not stay idle for a non-R&C game"
+            }
         } elseif ($logText -notmatch 'Render resources ready' -or $logText -notmatch 'Message: Ratchet found their automated Vulkan overlay test') {
             throw "layer did not initialize and ingest the injected event"
         }
@@ -305,6 +320,7 @@ if ($Mode -eq "preflight") {
             Invoke-Checked "installer lifecycle" "powershell.exe" @("-NoProfile", "-File", (Join-Path $TestsRoot "installer\Test-Installer.ps1")) $RepoRoot
             Invoke-MockScenario -Name "rac1-normal" -Preset RAC1 -Executable rpcs3.exe
             Invoke-MockScenario -Name "rac1-disabled" -Preset RAC1 -Executable rpcs3.exe -Disabled
+            Invoke-MockScenario -Name "rac1-other-game" -Preset RAC1 -Executable rpcs3.exe -WindowTitle "FPS: 30.00 | Vulkan | Demon's Souls [BLUS30443]" -ExpectIdle
             Invoke-MockScenario -Name "rac1-obs" -Preset RAC1 -Executable rpcs3.exe -ObsActive
         }
         if ($Mode -in @("all", "validation")) {

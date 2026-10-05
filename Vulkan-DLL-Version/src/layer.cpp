@@ -78,6 +78,7 @@ static uint64_t g_messageTimestamp = 0;
 static uint64_t g_lastPollTick = 0;      // parity: poll the log at PollMs, not per frame
 static bool g_readyMessageShown = false;  // parity: one-time startup notification
 static bool g_presetResolved = false;
+static bool g_idleExplained = false;      // idle-title note, once per instance's log
 static rolayout::Metrics g_layout = rolayout::metricsForHeight(1080.0f, 48.0f);
 
 struct RuntimePresetSignals {
@@ -89,13 +90,26 @@ struct RuntimePresetSignals {
 
 static DWORD g_titleScanPid = 0;
 
+// InternalGetWindowText, never GetWindowText/GetWindowTextLength: for a window
+// owned by this process those SEND WM_GETTEXT to its thread and wait. The layer
+// runs on the emulator's Vulkan threads while the UI thread may be blocked on
+// them — RPCS3's startup device query is exactly that — so a sent message
+// stalls both until RPCS3 reports "Vulkan Check Timeout". The internal call
+// reads the stored title without messaging anyone.
+static std::string ReadWindowTitle(HWND hwnd) {
+    wchar_t wide[512];
+    int length = InternalGetWindowText(hwnd, wide, (int)(sizeof(wide) / sizeof(wide[0])));
+    if (length <= 0) return std::string();
+    int bytes = WideCharToMultiByte(CP_UTF8, 0, wide, length, nullptr, 0, nullptr, nullptr);
+    if (bytes <= 0) return std::string();
+    std::string title((size_t)bytes, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide, length, &title[0], bytes, nullptr, nullptr);
+    return title;
+}
+
 static BOOL CALLBACK CollectPresetWindowTitles(HWND hwnd, LPARAM value) {
     auto* signals = reinterpret_cast<RuntimePresetSignals*>(value);
-    int length = GetWindowTextLengthA(hwnd);
-    if (length <= 0) return TRUE;
-    std::vector<char> text((size_t)length + 1, 0);
-    GetWindowTextA(hwnd, text.data(), (int)text.size());
-    std::string title(text.data());
+    std::string title = ReadWindowTitle(hwnd);
     if (title.empty()) return TRUE;
 
     DWORD pid = 0;
@@ -111,10 +125,12 @@ static BOOL CALLBACK CollectPresetWindowTitles(HWND hwnd, LPARAM value) {
     return TRUE;
 }
 
-// Collect the window titles that tell RAC2 apart from RAC3.
-static void CollectPresetSignals(const std::string& processExe,
+static const bool kTitlesAvailable = true;
+
+// Collect the window titles that show which game the emulator is running, and
+// tell RAC2 apart from RAC3.
+static void CollectPresetSignals(const std::string&,
                                  RuntimePresetSignals& signals) {
-    if (!rogate::needsWindowTitleSignals(processExe, g_config.enabledPresets)) return;
     g_titleScanPid = GetCurrentProcessId();
     EnumWindows(CollectPresetWindowTitles, reinterpret_cast<LPARAM>(&signals));
 }
@@ -124,7 +140,9 @@ static void CollectPresetSignals(const std::string& processExe,
 // No portable equivalent exists on Linux. Reading another client's window title
 // is exactly what Wayland's security model forbids, and the X11 route
 // (_NET_CLIENT_LIST) is a dead end on modern setups. RAC2/RAC3 are instead
-// disambiguated from the ini — see the explicit-preset fallback below.
+// disambiguated from the ini — see the explicit-preset fallback below — and
+// the emulator alone gates the overlay, whatever game it is running.
+static const bool kTitlesAvailable = false;
 static void CollectPresetSignals(const std::string&, RuntimePresetSignals&) {}
 
 #endif // _WIN32
@@ -135,7 +153,7 @@ static bool RefreshRuntimePreset() {
     CollectPresetSignals(processExe, signals);
     std::string detected = rogate::detectPreset(
         processExe, g_config.enabledPresets,
-        signals.emulatorTitles, signals.clientTitles);
+        signals.emulatorTitles, signals.clientTitles, kTitlesAvailable);
 
 #ifndef _WIN32
     // With no title signals, a PCSX2 host running with both RAC2 and RAC3
@@ -157,6 +175,16 @@ static bool RefreshRuntimePreset() {
 #endif
 
     if (detected.empty()) {
+        // A customised RPCS3 title format without %T/%t lands here forever,
+        // so name the titles that were actually seen.
+        if (kTitlesAvailable && !g_idleExplained) {
+            g_idleExplained = true;
+            std::string seen;
+            for (const std::string& t : signals.emulatorTitles)
+                seen += (seen.empty() ? "" : " | ") + ("'" + t + "'");
+            LayerLog("No supported R&C game in the emulator window title yet; "
+                     "overlay idle (titles: %s)", seen.empty() ? "(none)" : seen.c_str());
+        }
         if (g_presetResolved) {
             LayerLog("Automatic preset became unresolved; event overlay paused");
             g_currentMessage.clear();
@@ -655,6 +683,7 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_CreateInstance(
     bool targeted = rogate::isTargetProcess(g_config.emulatorProcs) &&
                     rogate::isProcessEnabledForPresets(processExe, g_config.enabledPresets);
     g_disabled = envOff || !targeted;
+    g_idleExplained = false; // DestroyInstance closed the log; explain again in the new one
     if (!g_disabled) RefreshRuntimePreset();
 
     LayerLog("=== RandOverlay Layer loaded ===");
