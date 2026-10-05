@@ -76,6 +76,9 @@ Register it for the current user — no registry, no admin:
   client's title and there is no portable replacement. Set `ActivePreset=RAC2`
   or `RAC3` in `RandOverlay.ini`. RAC1/RPCS3 is unaffected — it is unambiguous
   by process name.
+- **Any game activates the overlay.** For the same reason the layer cannot see
+  which game the emulator is running, so it activates in RPCS3/PCSX2 whatever
+  is booted. On Windows it waits for the game's window title instead.
 - **Fonts.** `HandelGothic BT` and `Bahnschrift` are Windows-installed and do
   not exist on Linux. The ini ships `FontFamilyLinux` / `FontFallbackLinux`
   defaults; point `FontFileLinux` at an absolute `.ttf`/`.otf` to use the real
@@ -169,6 +172,12 @@ signals are missing or conflict, event rendering pauses rather than choosing the
   `FontFallbackLinux` let one shared ini serve both builds
 - `ClientComponent` — which Archipelago Launcher component the launch prompt starts
   for this preset (RAC1: `Ratchet & Clank Client`, RAC2/RAC3: the R&C game clients)
+
+The overlay activates only once the emulator's own window title shows a supported game:
+RAC1 in RPCS3 by its `NPEA00385` / `BORD00001` serial or its name, RAC2/RAC3 in PCSX2 by name.
+Any other game (Demon's Souls in RPCS3, say) leaves the layer idle — no banner, no log reading,
+no prompt — and `layer_debug.log` records the titles it saw. A custom RPCS3 window-title format
+must keep `%T` or `%t` for RAC1 to be recognised.
 
 If Archipelago is not running when the overlay activates, a one-time prompt offers:
 **Yes** = launch the automatically detected preset's client directly, **No** = open the Archipelago
