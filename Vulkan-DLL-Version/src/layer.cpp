@@ -90,13 +90,26 @@ struct RuntimePresetSignals {
 
 static DWORD g_titleScanPid = 0;
 
+// InternalGetWindowText, never GetWindowText/GetWindowTextLength: for a window
+// owned by this process those SEND WM_GETTEXT to its thread and wait. The layer
+// runs on the emulator's Vulkan threads while the UI thread may be blocked on
+// them — RPCS3's startup device query is exactly that — so a sent message
+// stalls both until RPCS3 reports "Vulkan Check Timeout". The internal call
+// reads the stored title without messaging anyone.
+static std::string ReadWindowTitle(HWND hwnd) {
+    wchar_t wide[512];
+    int length = InternalGetWindowText(hwnd, wide, (int)(sizeof(wide) / sizeof(wide[0])));
+    if (length <= 0) return std::string();
+    int bytes = WideCharToMultiByte(CP_UTF8, 0, wide, length, nullptr, 0, nullptr, nullptr);
+    if (bytes <= 0) return std::string();
+    std::string title((size_t)bytes, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide, length, &title[0], bytes, nullptr, nullptr);
+    return title;
+}
+
 static BOOL CALLBACK CollectPresetWindowTitles(HWND hwnd, LPARAM value) {
     auto* signals = reinterpret_cast<RuntimePresetSignals*>(value);
-    int length = GetWindowTextLengthA(hwnd);
-    if (length <= 0) return TRUE;
-    std::vector<char> text((size_t)length + 1, 0);
-    GetWindowTextA(hwnd, text.data(), (int)text.size());
-    std::string title(text.data());
+    std::string title = ReadWindowTitle(hwnd);
     if (title.empty()) return TRUE;
 
     DWORD pid = 0;
