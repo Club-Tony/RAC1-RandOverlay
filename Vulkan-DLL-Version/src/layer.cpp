@@ -108,6 +108,7 @@ static bool g_presetResolved = false;
 static bool g_idleExplained = false;      // idle-title note, once per instance's log
 static std::string g_loggedConfigWarning; // config warning already in this log
 static rolayout::Metrics g_layout = rolayout::metricsForHeight(1080.0f, 48.0f);
+static void ApplyFontSettings(); // after a preset-switch reload: follow its fonts
 
 // The config loader words its first problem the way AHK and PS+WPF do. Log it
 // once per log file, after each load.
@@ -235,6 +236,7 @@ static bool RefreshRuntimePreset() {
         g_config.load(detected);
         LayerLog("Automatic preset: %s -> %s", previous.c_str(), detected.c_str());
         LogConfigWarning();
+        ApplyFontSettings();
     }
     g_presetResolved = true;
     return true;
@@ -302,6 +304,7 @@ static bool g_imguiReady  = false;
 static uint64_t g_lastPresentTick = 0;
 static ImFont* g_primaryFont = nullptr;
 static ImFont* g_digitFont = nullptr;
+static std::string g_fontSourceKey; // fontSourceKey() of the fonts in the atlas
 
 static void ShowReadyIfPossible() {
     if (!g_renderReady || !g_presetResolved || g_readyMessageShown) return;
@@ -379,23 +382,23 @@ static void ShutdownImgui() {
     g_imguiReady = false;
 }
 
-// ── ImGui init (bound to our overlay render pass) ─────────────────────────────
-static bool InitImgui() {
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = nullptr;   // don't read/write imgui.ini
-    io.LogFilename = nullptr;
-    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-
-    // Font parity with the AHK/PS runtimes: the configured FontFamily
-    // (HandelGothic BT — the R&C-style font), then FontFallback (Bahnschrift),
-    // then ImGui's built-in font as a last resort.
-    // VulkanFontSize is the 1080p baseline. Rebuilding ImGui with each
-    // swapchain automatically tracks windowed/fullscreen resolution changes.
+// ── Overlay fonts and layout ──────────────────────────────────────────────────
+// VulkanFontSize is the 1080p baseline, scaled to the swapchain height, so the
+// layout follows windowed/fullscreen resolution changes with each swapchain.
+static void ApplyLayout() {
     const float baseFontPx = (float)(g_config.fontSize > 0 ? g_config.fontSize : 48);
     g_layout = rolayout::metricsForHeight((float)g_swapExtent.height, baseFontPx);
+}
+
+// Font parity with the AHK/PS runtimes: the configured FontFamily
+// (HandelGothic BT — the R&C-style font), then FontFallback (Bahnschrift),
+// then ImGui's built-in font as a last resort. Adds to the current context's
+// atlas and points g_primaryFont/g_digitFont at the new fonts.
+static void LoadOverlayFonts() {
+    ImGuiIO& io = ImGui::GetIO();
     const float fontPx = g_layout.fontPx;
+    g_primaryFont = nullptr;
+    g_digitFont = nullptr;
     ImFont* font = nullptr;
     // An explicit FontFile wins over family-name resolution — the escape hatch
     // for platforms with no font registry to search.
@@ -428,6 +431,44 @@ static bool InitImgui() {
         g_primaryFont = io.Fonts->AddFontDefault(&fc);
         LayerLog("Using ImGui default font (%.0fpx)", fontPx);
     }
+    g_fontSourceKey = fontSourceKey(g_config);
+}
+
+// A reload (a preset switch, or another instance re-reading the ini) can change
+// the font size, face or file while ImGui is live. ImGui 1.92 rasterises glyphs
+// at whatever size each draw asks for, and every draw passes g_layout.fontPx,
+// so a new size only needs the layout recomputed. A new face is added to the
+// atlas before the old one is removed, so the atlas never runs out of fonts.
+// Callers hold g_renderMutex and run between frames, while the atlas is
+// unlocked; the backend uploads the atlas changes with the next frame.
+static void ApplyFontSettings() {
+    if (!g_imguiReady) return; // InitImgui reads g_config when it next runs
+    const float previousPx = g_layout.fontPx;
+    ApplyLayout();
+    if (fontSourceKey(g_config) != g_fontSourceKey) {
+        ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+        ImFont* oldPrimary = g_primaryFont;
+        ImFont* oldDigit = g_digitFont;
+        LoadOverlayFonts();
+        if (oldDigit && oldDigit != oldPrimary) atlas->RemoveFont(oldDigit);
+        if (oldPrimary) atlas->RemoveFont(oldPrimary);
+    } else if (g_layout.fontPx != previousPx) {
+        LayerLog("Font size now %.0fpx", g_layout.fontPx);
+    }
+}
+
+// ── ImGui init (bound to our overlay render pass) ─────────────────────────────
+static bool InitImgui() {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;   // don't read/write imgui.ini
+    io.LogFilename = nullptr;
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+
+    ApplyLayout();
+    LoadOverlayFonts();
+    const float fontPx = g_layout.fontPx;
 
     ImGui::StyleColorsDark();
 

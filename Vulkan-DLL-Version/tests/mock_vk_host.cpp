@@ -37,6 +37,9 @@
  *                           On Windows the layer only activates once the
  *                           emulator title shows a supported game, e.g.
  *                           "Ratchet & Clank [NPEA00385]"
+ *   MOCK_RETITLE=<t>        change the window title to <t> mid-run, keeping the
+ *                           swapchain, as an emulator does when another game
+ *                           boots; MOCK_RETITLE_MS=<ms> sets when (default 3000)
  *
  * Auto-exits after MOCK_SECONDS or on window close, then destroys everything
  * it created in order (swapchain, device, surface, instance) so validation
@@ -135,6 +138,8 @@ static void DestroyHostWindow() {
     if (g_hwnd) { DestroyWindow(g_hwnd); g_hwnd = nullptr; }
 }
 
+static void RetitleHostWindow(const char* title) { SetWindowTextA(g_hwnd, title); }
+
 static const char* PlatformSurfaceExtension() { return VK_KHR_WIN32_SURFACE_EXTENSION_NAME; }
 
 static VkSurfaceKHR CreateHostSurface(VkInstance instance) {
@@ -191,6 +196,12 @@ static void CreateHostWindow(bool borderless) {
     printf("[mock-meta] ready=1 window=0x%x mode=%s x=0 y=0 width=%u height=%u\n",
            (unsigned)g_win, borderless ? "borderless" : "windowed", width, height);
     fflush(stdout);
+}
+
+static void RetitleHostWindow(const char* title) {
+    xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, g_win, XCB_ATOM_WM_NAME,
+                        XCB_ATOM_STRING, 8, (uint32_t)strlen(title), title);
+    xcb_flush(g_conn);
 }
 
 static void PumpEvents() {
@@ -562,6 +573,11 @@ int main() {
     uint64_t limitMs = (secEnv && atoi(secEnv) > 0) ? (uint64_t)atoi(secEnv) * 1000 : 30000;
     printf("[mock] entering present loop (runtime %llus)\n", (unsigned long long)(limitMs / 1000));
     fflush(stdout);
+    const char* retitle = getenv("MOCK_RETITLE");
+    if (retitle && !*retitle) retitle = nullptr;
+    const char* retitleMsEnv = getenv("MOCK_RETITLE_MS");
+    uint64_t retitleMs = (retitleMsEnv && atoi(retitleMsEnv) > 0) ? (uint64_t)atoi(retitleMsEnv) : 3000;
+    bool retitled = false;
     uint64_t start = nowMs();
     uint32_t frame = 0;
     uint8_t clearBytes[3] = { 0, 0, 0 };
@@ -569,6 +585,12 @@ int main() {
     while (!g_quit) {
         PumpEvents();
         if (nowMs() - start > limitMs) break; // safety auto-exit
+        if (retitle && !retitled && nowMs() - start >= retitleMs) {
+            retitled = true;
+            RetitleHostWindow(retitle);
+            printf("[mock] window retitled: %s\n", retitle);
+            fflush(stdout);
+        }
 
         // Take the app lock for the whole frame, letting a requested rebuild
         // run first. Keep pumping the window while waiting: a driver may need

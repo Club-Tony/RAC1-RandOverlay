@@ -432,6 +432,26 @@ int main(int argc, char** argv) {
             "[General]\nActivePreset=RAC1\n[Preset.RAC1]\nOverlayColor=FF0000\n", sharedIni);
         CHECK(approx(ok.overlayColor[0], 1.0f) && ok.warning.empty(), "a valid colour without '#' is accepted quietly");
     }
+    {
+        // A preset switch reloads fonts only when the faces change; a size-only
+        // difference keeps the same key (the layer just rescales the layout).
+        const char* body =
+            "[General]\nActivePreset=RAC2\nEnabledPresets=RAC2,RAC3\n"
+            "[Preset.RAC2]\nVulkanFontSize=48\nFontFamily=HandelGothic BT\n"
+            "[Preset.RAC3]\nVulkanFontSize=72\nFontFamily=HandelGothic BT\n";
+        std::string path = tempPath("randoverlay_fontkey.ini");
+        writeFile(path, body);
+        setEnvVar("RANDOVERLAY_INI", path.c_str());
+        RandOverlayConfig rac2; rac2.load("RAC2");
+        RandOverlayConfig rac3; rac3.load("RAC3");
+        CHECK(rac2.fontSize == 48 && rac3.fontSize == 72, "per-preset VulkanFontSize is read");
+        CHECK(fontSourceKey(rac2) == fontSourceKey(rac3), "a size-only switch keeps the font source key");
+        writeFile(path, (std::string(body) + "FontFile=C:/fonts/other.ttf\n").c_str());
+        RandOverlayConfig rac3File; rac3File.load("RAC3");
+        CHECK(fontSourceKey(rac2) != fontSourceKey(rac3File), "a different FontFile changes the font source key");
+        removeAll(path);
+        if (argc > 1) setEnvVar("RANDOVERLAY_INI", argv[1]);
+    }
     // An ini that cannot be used is reported the way AHK and PS+WPF report it,
     // naming the preset the layer falls back to.
     CHECK(rocfg_detail::iniProblem("", false, "RAC1") ==

@@ -343,21 +343,22 @@ function Build-MockHosts {
     }
 }
 
-# Sets Key=Value in the [General] section: replaces an existing line, or inserts
-# one under the section header (the shipped ini has no EnabledPresets line, so a
-# plain -replace would silently change nothing).
-function Set-IniGeneralValue([string]$Content, [string]$Key, [string]$Value) {
+# Sets Key=Value in [Section]: replaces an existing line, or inserts one under the
+# section header (the shipped ini has no EnabledPresets line, so a plain -replace
+# would silently change nothing). A missing [General] goes first, any other
+# missing section last.
+function Set-IniValue([string]$Content, [string]$Section, [string]$Key, [string]$Value) {
     $newline = if ($Content.Contains("`r`n")) { "`r`n" } else { "`n" }
     $lines = [System.Collections.Generic.List[string]]::new()
     $lines.AddRange([string[]]($Content -split "\r?\n"))
-    $section = ""
+    $current = ""
     $headerIndex = -1
     $replaced = $false
     for ($i = 0; $i -lt $lines.Count; $i++) {
         if ($lines[$i] -match '^\s*\[(?<name>[^\]]+)\]\s*$') {
-            $section = $Matches['name'].Trim()
-            if ($section -eq "General" -and $headerIndex -lt 0) { $headerIndex = $i }
-        } elseif ($section -eq "General" -and $lines[$i] -match ('^\s*' + [regex]::Escape($Key) + '\s*=')) {
+            $current = $Matches['name'].Trim()
+            if ($current -eq $Section -and $headerIndex -lt 0) { $headerIndex = $i }
+        } elseif ($current -eq $Section -and $lines[$i] -match ('^\s*' + [regex]::Escape($Key) + '\s*=')) {
             $lines[$i] = "$Key=$Value"
             $replaced = $true
         }
@@ -365,15 +366,23 @@ function Set-IniGeneralValue([string]$Content, [string]$Key, [string]$Value) {
     if (-not $replaced) {
         if ($headerIndex -ge 0) {
             $lines.Insert($headerIndex + 1, "$Key=$Value")
-        } else {
+        } elseif ($Section -eq "General") {
             $lines.Insert(0, "$Key=$Value")
             $lines.Insert(0, "[General]")
+        } else {
+            $lines.Add("[$Section]")
+            $lines.Add("$Key=$Value")
         }
     }
     return ($lines -join $newline)
 }
 
-function New-TestConfig([string]$Preset, [string]$ScenarioRoot, [string]$EnabledPresets) {
+function Set-IniGeneralValue([string]$Content, [string]$Key, [string]$Value) {
+    Set-IniValue $Content "General" $Key $Value
+}
+
+# -IniValues sets extra keys, as @{ "Preset.RAC3/VulkanFontSize" = "80" }.
+function New-TestConfig([string]$Preset, [string]$ScenarioRoot, [string]$EnabledPresets, [hashtable]$IniValues) {
     $logDir = Join-Path $ScenarioRoot "logs"
     New-Item -ItemType Directory -Path $logDir -Force | Out-Null
     $configPath = Join-Path $ScenarioRoot "RandOverlay.ini"
@@ -381,6 +390,12 @@ function New-TestConfig([string]$Preset, [string]$ScenarioRoot, [string]$Enabled
     $content = $content -replace '(?m)^ActivePreset=.*$', "ActivePreset=$Preset"
     $content = $content -replace '(?m)^LogDir=.*$', ("LogDir=" + $logDir)
     if ($EnabledPresets) { $content = Set-IniGeneralValue $content "EnabledPresets" $EnabledPresets }
+    if ($IniValues) {
+        foreach ($entry in $IniValues.GetEnumerator()) {
+            $section, $key = ([string]$entry.Key) -split '/', 2
+            $content = Set-IniValue $content $section $key ([string]$entry.Value)
+        }
+    }
     Set-Content -LiteralPath $configPath -Value $content -Encoding ASCII
     $logPath = Join-Path $logDir "Launcher_Automation.txt"
     Set-Content -LiteralPath $logPath -Value "[FileLog at 00:00:00]: automation seed" -Encoding ASCII
@@ -455,6 +470,8 @@ function Invoke-MockScenario {
         [switch]$ExpectIdle,
         # Written to [General] EnabledPresets; ActivePreset stays -Preset.
         [string]$EnabledPresets,
+        # Extra ini keys, as @{ "Preset.RAC3/VulkanFontSize" = "80" }.
+        [hashtable]$IniValues,
         # Extra environment for the mock host, e.g. @{ MOCK_RECREATE = "3" }.
         [hashtable]$MockEnv,
         # Regexes the layer log must / must not match.
@@ -475,7 +492,7 @@ function Invoke-MockScenario {
 
     $scenarioRoot = Join-Path $RunRoot $Name
     New-Item -ItemType Directory -Path $scenarioRoot -Force | Out-Null
-    $testData = New-TestConfig $Preset $scenarioRoot $EnabledPresets
+    $testData = New-TestConfig $Preset $scenarioRoot $EnabledPresets $IniValues
     $obsManifestPath = $null
     if ($LayerSource -eq "Build") {
         if (-not (Test-Path -LiteralPath $BuildLayerDll -PathType Leaf)) { throw "build layer DLL not found at $BuildLayerDll" }
@@ -656,6 +673,11 @@ $VulkanSdk = $sdkResolution.Path
 $VulkanSdkSource = $sdkResolution.Source
 # PCSX2 title naming both RAC2 and RAC3: the layer must refuse to guess.
 $AmbiguousRac2Rac3Title = "Ratchet & Clank: Going Commando / Up Your Arsenal | PCSX2"
+# A game switch with the swapchain kept: PCSX2 boots RAC2, then RAC3, whose preset
+# has a bigger font in another face. At the mock's height (<= 720 px) the layout
+# scale is 0.75, so 48 -> 36 px and 80 -> 60 px.
+$FontSwitchIni = @{ "Preset.RAC3/VulkanFontSize" = "80"; "Preset.RAC3/FontFamily" = "Consolas" }
+$FontSwitchLog = @('font=36px', 'Automatic preset: RAC2 -> RAC3', '(?i)Font loaded: \S*consola\S* \(60px\)')
 
 New-Item -ItemType Directory -Path $ArtifactRoot -Force | Out-Null
 if ($Mode -eq "preflight") {
@@ -694,6 +716,11 @@ if ($Mode -eq "preflight") {
             Invoke-MockScenario -Name "rac1-swapchain-lifecycle-validation" -Preset RAC1 -Executable rpcs3.exe -Validation `
                 -MockEnv @{ MOCK_SECONDS = "10"; MOCK_RECREATE = "3"; MOCK_RECREATE_DESTROY_FIRST = "1"; MOCK_RECREATE_THREAD = "1" } `
                 -ExpectRecreates 3 -ExpectTeardown
+            # The overlay follows the new preset's font size and face without a
+            # swapchain rebuild; the atlas change must not upset validation.
+            Invoke-MockScenario -Name "rac2-rac3-font-switch-validation" -Preset RAC2 -EnabledPresets "RAC2,RAC3" -Executable pcsx2-qt.exe -Validation `
+                -IniValues $FontSwitchIni -ExpectLog $FontSwitchLog `
+                -MockEnv @{ MOCK_SECONDS = "8"; MOCK_RETITLE = "Ratchet & Clank: Up Your Arsenal | PCSX2"; MOCK_RETITLE_MS = "2000" }
         }
         if ($Mode -in @("all", "visual")) {
             Invoke-MockScenario -Name "rac1-windowed-visual" -Preset RAC1 -Executable rpcs3.exe -Visual
@@ -701,6 +728,11 @@ if ($Mode -eq "preflight") {
             Invoke-MockScenario -Name "rac3-visual" -Preset RAC3 -Executable pcsx2-qt.exe -Visual
             Invoke-MockScenario -Name "rac2-rac3-ambiguous-visual" -Preset RAC2 -EnabledPresets "RAC2,RAC3" -Executable pcsx2-qt.exe `
                 -WindowTitle $AmbiguousRac2Rac3Title -ExpectIdle -Visual -ExpectLog @('enabled=RAC2,RAC3')
+            # The event arrives after the switch, so the frame shows the RAC3 size
+            # (the message wraps at 60 px, and wrapped text uses the digit font).
+            Invoke-MockScenario -Name "rac2-rac3-font-switch-visual" -Preset RAC2 -EnabledPresets "RAC2,RAC3" -Executable pcsx2-qt.exe -Visual `
+                -IniValues $FontSwitchIni -ExpectLog $FontSwitchLog `
+                -MockEnv @{ MOCK_RETITLE = "Ratchet & Clank: Up Your Arsenal | PCSX2"; MOCK_RETITLE_MS = "2000" }
         }
     } catch {
         Add-Failure $Mode $_.Exception.Message

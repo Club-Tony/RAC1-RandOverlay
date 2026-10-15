@@ -164,6 +164,12 @@ inline std::string resolveIniPath() {
 
 } // namespace rocfg_detail
 
+// The settings that decide which font files the overlay loads. Two configs with
+// the same key draw with the same faces; only the size can still differ.
+inline std::string fontSourceKey(const RandOverlayConfig& c) {
+    return c.fontFile + '\n' + c.fontFamily + '\n' + c.fontFallback;
+}
+
 inline void RandOverlayConfig::load(const std::string& presetOverride) {
     using namespace rocfg_detail;
     // Every load starts from the built-in defaults, as the AHK and PS+WPF
