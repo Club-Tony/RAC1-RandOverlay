@@ -19,8 +19,13 @@ the shared repo-root `RandOverlay.ini`, so all three runtimes look consistent.
 ## Requirements
 
 - **Build:** an **x86_64** MinGW-w64 `g++` (e.g. `C:\mingw64\bin`, GCC 13+), and the
-  Vulkan SDK (`build.bat` expects `C:\VulkanSDK\1.4.341.1`). A 32-bit toolchain
-  will not produce a DLL that loads into the emulator — `build.bat` guards against this.
+  Vulkan SDK. `build.bat` uses `C:\mingw64\bin` (else `g++` on `PATH`) and
+  `C:\VulkanSDK\1.4.341.1` unless overridden: `RANDOVERLAY_GCC` (with `RANDOVERLAY_GCC_C`,
+  `RANDOVERLAY_AR` and `RANDOVERLAY_WINDRES` from the same toolchain) and `VULKAN_SDK`.
+  `tests\run_tests.bat` honours `RANDOVERLAY_GCC` too, and the live runner takes
+  `-GccPath` / `-VulkanSdk` (see [Automated live verification](#automated-live-verification)).
+  A 32-bit toolchain will not produce a DLL that loads into the emulator — `build.bat`
+  guards against this.
 - **Vendored deps (not committed):** clone into `deps/` before building:
   `git clone https://github.com/ocornut/imgui deps/imgui` and
   `git clone https://github.com/TsudaKageyu/minhook deps/minhook` (minhook is only
@@ -200,14 +205,34 @@ Override the ini location with the `RANDOVERLAY_INI` environment variable.
 The live runner builds deterministic `rpcs3.exe` and `pcsx2-qt.exe` mock hosts, uses only
 scratch configuration/logs, injects synthetic events, verifies process and preset gating,
 checks clean validation/OBS coexistence, and captures pre/post-event PNGs with overlay-band
-pixel assertions.
+pixel assertions. It covers RAC1, RAC2 and RAC3, PCSX2 with both RAC2 and RAC3 enabled (a
+title naming one game resolves to it; a title naming both must leave the overlay idle and
+the frame unchanged), and swapchain rebuilds under validation (destroy-then-create and
+from a second thread, then ordered teardown).
 
 ```powershell
 .\tests\run_live_tests.ps1 -Mode preflight
 .\tests\run_live_tests.ps1 -Mode all -KeepArtifacts
 .\tests\run_live_tests.ps1 -Mode validation
 .\tests\run_live_tests.ps1 -Mode visual
+.\tests\run_live_tests.ps1 -Mode all -LayerSource Build
+.\tests\run_live_tests.ps1 -Mode preflight -GccPath D:\msys64\mingw64\bin\g++.exe -VulkanSdk D:\VulkanSDK\1.4.341.1
 ```
+
+**Which layer is tested.** `-LayerSource Installed` (the default) uses the layer registered
+for the current user. `-LayerSource Build` tests this checkout's `build\RandOverlay_layer.dll`
+instead: it renders a scratch manifest from `RandOverlay_layer.json.in`, points the mock hosts
+at it through `VK_IMPLICIT_LAYER_PATH` (plus OBS's 64-bit hook manifest for the OBS scenario),
+reads `build\layer_debug.log`, and fails unless the loader's `VK_LOADER_DEBUG=layer` output
+shows that DLL being inserted. It leaves the Vulkan layer registrations and the installed copy
+untouched. The loader ignores `VK_IMPLICIT_LAYER_PATH` in an elevated session, so run it from a normal prompt.
+
+**Toolchain.** `-GccPath` defaults to `RANDOVERLAY_GCC`, then `C:\mingw64\bin\g++.exe`, then
+`C:\msys64\mingw64\bin\g++.exe`, then `g++` on `PATH`; `-VulkanSdk` defaults to `VULKAN_SDK`,
+then `C:\VulkanSDK\1.4.341.1`. The runner builds the mock hosts with that compiler and passes
+it to `build.bat` (`RANDOVERLAY_GCC`, plus `RANDOVERLAY_GCC_C`/`RANDOVERLAY_AR`/
+`RANDOVERLAY_WINDRES` found beside it, and `VULKAN_SDK`) and to `tests\run_tests.bat`, so the
+layer, the unit tests and the mock hosts share one toolchain.
 
 Artifacts are written under `tests\live\artifacts` and are gitignored. Real RPCS3/PCSX2
 game launching remains a manual certification step because game paths and emulator state
@@ -249,6 +274,8 @@ Message: <event text>
 - `installer/Install-RandOverlay.bat` - double-click release ZIP entrypoint.
 - `installer/Setup-RandOverlay.ps1` - guided install and maintenance engine.
 - `installer/Build-RandOverlayRelease.ps1` - deterministic self-contained BAT/ZIP/EXE release builder.
+  It refuses a source tree with uncommitted changes or an unknown commit unless `-AllowDirty` is
+  passed for a local test build.
 - `tests/installer/Test-Installer.ps1` - isolated installer lifecycle regression.
 
 - `src/layer.cpp` — the implicit layer (present interception + ImGui text).
