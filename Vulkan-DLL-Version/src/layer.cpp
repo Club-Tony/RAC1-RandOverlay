@@ -821,6 +821,10 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_CreateInstance(
                     rogate::isProcessEnabledForPresets(processExe, g_config.enabledPresets);
     g_disabled = envOff || !targeted;
     if (!g_disabled) RefreshRuntimePreset();
+    // A second instance mid-session re-read the ini above. When the detected
+    // preset already matched, RefreshRuntimePreset did not reload, so apply any
+    // font change here; after a reload this finds nothing left to do.
+    ApplyFontSettings();
 
     LayerLog("=== RandOverlay Layer loaded ===");
     LayerLog("vkCreateInstance OK, instance=0x%p", (void*)*pInstance);
