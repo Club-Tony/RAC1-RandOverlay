@@ -156,15 +156,20 @@ inline std::string resolveIniPath() {
 
 inline void RandOverlayConfig::load(const std::string& presetOverride) {
     using namespace rocfg_detail;
-    warning.clear();
+    // Every load starts from the built-in defaults, as the AHK and PS+WPF
+    // runtimes' single load does. The layer reloads on each preset switch, and
+    // a key the new [Preset.X] section (or the ini) leaves out must read as its
+    // default, not as whatever the previous preset set.
+    *this = RandOverlayConfig();
     std::string ini = resolveIniPath();
     iniPathUsed = ini;
-    if (ini.empty()) return; // keep defaults
 
-    std::ifstream f(ini);
-    if (!f.is_open()) return;
-
+    // A missing or unreadable ini still applies the preset override and its
+    // preset defaults below, with no sections to read.
     std::map<std::string, std::map<std::string, std::string>> sections;
+    std::ifstream f;
+    if (!ini.empty()) f.open(ini);
+    loaded = f.is_open();
     std::string line, section;
     while (std::getline(f, line)) {
         std::string t = trim(line);
@@ -241,7 +246,9 @@ inline void RandOverlayConfig::load(const std::string& presetOverride) {
 
     std::string psec = "Preset." + activePreset;
 
-    // Reset preset-derived defaults before applying a runtime switch.
+    // The only defaults that differ by preset, as in AHK's
+    // ArchDefaultEmulatorsForPreset and PS+WPF's $PresetDefaults. Every other
+    // preset key shares the struct defaults across RAC1/RAC2/RAC3.
     if (activePreset == "RAC2") {
         emulatorProcs = "pcsx2-qt.exe,pcsx2.exe";
         clientComponent = "Ratchet & Clank 2 Client";
@@ -280,6 +287,4 @@ inline void RandOverlayConfig::load(const std::string& presetOverride) {
     if (get(psec, "FontFamilyLinux", tmp) && !tmp.empty())    fontFamily = tmp;
     if (get(psec, "FontFallbackLinux", tmp) && !tmp.empty())  fontFallback = tmp;
 #endif
-
-    loaded = true;
 }

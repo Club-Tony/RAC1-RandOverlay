@@ -421,6 +421,83 @@ int main(int argc, char** argv) {
         CHECK(c.warning.empty(), "each load starts with no warning");
     }
 
+    // The layer reloads with the detected preset on every switch. Each load
+    // starts from the defaults, as the AHK and PS+WPF runtimes' one load does,
+    // so nothing the previous preset or ini set survives a key going missing.
+    printf("[config reload]\n");
+    {
+        std::string path = tempPath("randoverlay_reload.ini");
+        writeFile(path,
+            "[General]\nActivePreset=RAC1\nEnabledPresets=RAC1,RAC2,RAC3\n"
+            "[Preset.RAC1]\nOverlayColor=#FF0000\nBackgroundColor=#00FF00\n"
+            "VerticalPercent=0.42\nVulkanFontSize=30\nFontFamily=Custom Family\n"
+            "FontFallback=Custom Fallback\nFontFile=custom-font.ttf\n"
+            "[Preset.RAC2]\nVerticalPercent=0.6\n");
+        setEnvVar("RANDOVERLAY_INI", path.c_str());
+        RandOverlayConfig c; c.load();
+        CHECK(approx(c.overlayColor[0], 1.0f) && approx(c.bgColor[1], 1.0f) &&
+              approx(c.verticalPercent, 0.42f) && c.fontSize == 30 &&
+              c.fontFamily == "Custom Family" && c.fontFallback == "Custom Fallback" &&
+              c.fontFile == "custom-font.ttf",
+              "RAC1 reads every key of its own section");
+
+        RandOverlayConfig defaults;
+        c.load("RAC2");
+        CHECK(c.activePreset == "RAC2" && approx(c.verticalPercent, 0.6f),
+              "switching to RAC2 reads [Preset.RAC2]");
+        CHECK(approx(c.overlayColor[0], defaults.overlayColor[0]) &&
+              approx(c.overlayColor[1], defaults.overlayColor[1]) &&
+              approx(c.overlayColor[2], defaults.overlayColor[2]),
+              "a switch to a preset without OverlayColor takes the default, not RAC1's");
+        CHECK(approx(c.bgColor[0], defaults.bgColor[0]) &&
+              approx(c.bgColor[1], defaults.bgColor[1]) &&
+              approx(c.bgColor[2], defaults.bgColor[2]),
+              "a switch to a preset without BackgroundColor takes the default");
+        CHECK(c.fontSize == defaults.fontSize, "VulkanFontSize does not carry over a switch");
+        CHECK(c.fontFamily == defaults.fontFamily && c.fontFallback == defaults.fontFallback,
+              "FontFamily and FontFallback do not carry over a switch");
+        CHECK(c.fontFile.empty(), "FontFile does not carry over a switch");
+
+        c.load("RAC1");
+        CHECK(approx(c.overlayColor[0], 1.0f) && approx(c.verticalPercent, 0.42f) &&
+              c.fontFile == "custom-font.ttf",
+              "switching back to RAC1 restores its own section");
+
+        // An invalid value on the new preset falls back to the default too.
+        writeFile(path,
+            "[General]\nActivePreset=RAC1\nEnabledPresets=RAC1,RAC2,RAC3\n"
+            "[Preset.RAC1]\nOverlayColor=#FF0000\nVerticalPercent=0.42\n"
+            "[Preset.RAC2]\nOverlayColor=not-a-colour\nVerticalPercent=7\n");
+        c.load("RAC1");
+        c.load("RAC2");
+        CHECK(approx(c.overlayColor[0], defaults.overlayColor[0]) &&
+              approx(c.verticalPercent, defaults.verticalPercent),
+              "a rejected value on the new preset takes the default, not the old preset's");
+
+        // No ActivePreset: RAC1, whatever the previous load resolved.
+        writeFile(path,
+            "[General]\nActivePreset=RAC3\nDisplayMs=7000\nLogDir=custom-logs\n");
+        c.load();
+        CHECK(c.activePreset == "RAC3" && c.enabledPresets == "RAC3" && c.displayMs == 7000 &&
+              c.logDir == "custom-logs",
+              "ActivePreset=RAC3 with DisplayMs and LogDir set");
+        writeFile(path, "[General]\nPollMs=900\n");
+        c.load();
+        CHECK(c.activePreset == "RAC1", "an ini without ActivePreset resolves RAC1, not the last preset");
+        CHECK(c.enabledPresets == "RAC1", "the legacy EnabledPresets fallback follows the reset preset");
+        CHECK(c.emulatorProcs == "rpcs3.exe" && c.clientComponent == "Ratchet & Clank Client",
+              "the RAC1 preset defaults follow the reset preset");
+        CHECK(c.displayMs == defaults.displayMs && c.logDir == defaults.logDir && c.pollMs == 900,
+              "[General] keys the ini no longer sets return to their defaults");
+        c.load("RAC2");
+        writeFile(path, "[General]\n");
+        c.load();
+        CHECK(c.activePreset == "RAC1", "a runtime override does not outlive the next plain load");
+
+        removeAll(path);
+        if (argc > 1) setEnvVar("RANDOVERLAY_INI", argv[1]);
+    }
+
     { float c[3] = {9,9,9}; CHECK(!rocfg_detail::parseHexColor("#ZZZZZZ", c), "malformed hex rejected"); }
     { float c[3] = {0,0,0}; CHECK(rocfg_detail::parseHexColor("#FF0000", c) && approx(c[0],1.0f) &&
                                   approx(c[1],0.0f) && approx(c[2],0.0f), "#FF0000 -> (1,0,0)"); }
