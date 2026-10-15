@@ -4,7 +4,8 @@ param(
     [ValidateSet('Bat','Zip','Exe')][string[]]$Format = @('Bat','Zip','Exe'),
     [string]$OutputRoot,
     [string]$LayerDll,
-    [switch]$NoClean
+    [switch]$NoClean,
+    [switch]$AllowDirty
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,16 +31,22 @@ function Get-Sha([string]$Path) {
 function Remove-Tree([string]$Path) { if ([IO.Directory]::Exists($Path)) { [IO.Directory]::Delete([IO.Path]::GetFullPath($Path), $true) } }
 function Write-Json([string]$Path, $Value) { $Value | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Path -Encoding UTF8 }
 
-function New-DeterministicZip([string]$Source, [string]$Destination) {
+# Archives only the files under $Source. Entry names are relative to $EntryRoot, so the
+# package folder itself stays the single top-level entry and nothing else in the staging
+# area can reach the ZIP.
+function New-DeterministicZip([string]$Source, [string]$EntryRoot, [string]$Destination) {
     Add-Type -AssemblyName System.IO.Compression
+    $Source = (Get-Item -LiteralPath $Source).FullName.TrimEnd('\')
+    $EntryRoot = (Get-Item -LiteralPath $EntryRoot).FullName.TrimEnd('\')
+    if (-not $Source.StartsWith($EntryRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "ZIP source $Source is not inside $EntryRoot" }
     if (Test-Path -LiteralPath $Destination) { [IO.File]::Delete($Destination) }
     $stream = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew)
     try {
         $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create, $false)
         try {
-            $files = Get-ChildItem -LiteralPath $Source -File -Recurse | Sort-Object { $_.FullName.Substring($Source.Length) }
+            $files = Get-ChildItem -LiteralPath $Source -File -Recurse | Sort-Object { $_.FullName.Substring($EntryRoot.Length) }
             foreach ($file in $files) {
-                $relative = $file.FullName.Substring($Source.Length).TrimStart('\').Replace('\','/')
+                $relative = $file.FullName.Substring($EntryRoot.Length).TrimStart('\').Replace('\','/')
                 $entry = $archive.CreateEntry($relative, [IO.Compression.CompressionLevel]::Optimal)
                 $entry.LastWriteTime = [DateTimeOffset]::new(1980,1,1,0,0,0,[TimeSpan]::Zero)
                 $input = [IO.File]::OpenRead($file.FullName)
@@ -130,11 +137,68 @@ exit /b 9
     [IO.File]::WriteAllText($Destination, $builder.ToString(), [Text.Encoding]::ASCII)
 }
 
+# release.json names the commit a release was built from. That only means something when
+# the commit is known and nothing uncommitted went into the build, so git must be
+# available, HEAD must resolve, and `git status --porcelain` must be empty.
+function Get-SourceProvenance([string]$Root) {
+    $provenance = [ordered]@{ Commit='unknown'; Dirty=$true; Problems=[System.Collections.Generic.List[string]]::new() }
+    if (-not (Get-Command git -CommandType Application -ErrorAction SilentlyContinue)) {
+        $provenance.Problems.Add('git is not available, so the source commit cannot be recorded')
+        return $provenance
+    }
+    # Windows PowerShell 5.1 turns redirected native stderr into error records, which
+    # 'Stop' would make terminating. Exit codes are checked explicitly instead.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $headOutput = @(& git -C $Root rev-parse --verify HEAD 2>&1)
+        $headExit = $LASTEXITCODE
+        $statusOutput = @(& git -C $Root status --porcelain 2>&1)
+        $statusExit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previousPreference }
+    $headLines = @($headOutput | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+    if ($headExit -eq 0 -and $headLines.Count -eq 1 -and $headLines[0] -match '^[0-9a-f]{40}([0-9a-f]{24})?$') {
+        $provenance.Commit = $headLines[0]
+    } else {
+        $provenance.Problems.Add("the source commit is unknown (git rev-parse HEAD exited $headExit)")
+    }
+    $statusLines = @($statusOutput | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ForEach-Object { ([string]$_).TrimEnd() } | Where-Object { $_ })
+    if ($statusExit -ne 0) {
+        $provenance.Problems.Add("the working tree state is unknown (git status exited $statusExit)")
+    } elseif ($statusLines.Count -gt 0) {
+        $shown = @($statusLines | Select-Object -First 5 | ForEach-Object { $_.Trim() }) -join ', '
+        if ($statusLines.Count -gt 5) { $shown += ', ...' }
+        $provenance.Problems.Add("the working tree has $($statusLines.Count) uncommitted change(s): $shown")
+    } else {
+        $provenance.Dirty = $false
+    }
+    $provenance
+}
+
+# Checked before anything is written, so a refused build leaves no output behind.
+# -AllowDirty is for local iteration and the test suites; it lifts the refusal only, and
+# release.json still records the commit and state that were found.
+$provenance = Get-SourceProvenance $RepoRoot
+if ($provenance.Problems.Count -gt 0) {
+    $reasons = $provenance.Problems -join '; '
+    if (-not $AllowDirty) {
+        throw "Refusing to build a release: $reasons. Build from a clean checkout of a commit, or pass -AllowDirty for a local test build."
+    }
+    Write-Warning "-AllowDirty: building from an unverified source tree ($reasons). release.json records sourceCommit=$($provenance.Commit), sourceDirty=$($provenance.Dirty.ToString().ToLowerInvariant())."
+}
+
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 $work = Join-Path $OutputRoot '.release-work'
-if (-not $NoClean) { Remove-Tree $work }
+# Build-time scratch, such as the generated bootstrap source, sits beside the staging
+# area, never inside it.
+$scratch = Join-Path $OutputRoot '.release-scratch'
+if (-not $NoClean) { Remove-Tree $work; Remove-Tree $scratch }
 $packageName = "RandOverlay-Vulkan-v$Version"
 $packageRoot = Join-Path $work $packageName
+# The package folder is restaged on every run, -NoClean included: copying lib onto an
+# earlier run's copy would nest it as lib\lib, and files dropped from the source would
+# linger. It is the only folder the ZIP archives.
+Remove-Tree $packageRoot
 $payload = Join-Path $packageRoot 'payload'
 New-Item -ItemType Directory -Path $payload -Force | Out-Null
 
@@ -172,12 +236,9 @@ $trackedFiles = @('RandOverlay_layer.dll','RandOverlay_layer.json','RandOverlay.
 $fileRecords = foreach ($name in $trackedFiles) {
     [ordered]@{ path=$name; sha256=(Get-Sha (Join-Path $payload $name)) }
 }
-$sourceCommit = (& git -C $RepoRoot rev-parse HEAD 2>$null | Select-Object -First 1)
-if (-not $sourceCommit) { $sourceCommit = 'unknown' }
-$sourceDirty = [bool](& git -C $RepoRoot status --porcelain 2>$null | Select-Object -First 1)
 $releaseMetadata = [ordered]@{
     schemaVersion=1; version=$Version; sourceRepository='https://github.com/Club-Tony/RAC1-RandOverlay'
-    sourceCommit=$sourceCommit.Trim(); sourceDirty=$sourceDirty; files=@($fileRecords)
+    sourceCommit=$provenance.Commit; sourceDirty=$provenance.Dirty; files=@($fileRecords)
     games=[ordered]@{
         RAC1=[ordered]@{ emulator='RPCS3'; client='Ratchet & Clank Client' }
         RAC2=[ordered]@{ emulator='PCSX2'; client='Ratchet & Clank 2 Client' }
@@ -206,7 +267,7 @@ It installs per-user under %LOCALAPPDATA%\RandOverlay and sends no telemetry.
 Set-Content -LiteralPath (Join-Path $packageRoot 'README-INSTALL.txt') -Value $installText -Encoding UTF8
 
 $zipPath = Join-Path $OutputRoot "$packageName.zip"
-New-DeterministicZip $work $zipPath
+New-DeterministicZip -Source $packageRoot -EntryRoot $work -Destination $zipPath
 $outputs = [System.Collections.Generic.List[string]]::new()
 $outputs.Add($zipPath)
 $manifestAsset = Join-Path $OutputRoot 'stack-manifest.json'
@@ -236,7 +297,8 @@ if ($Format -contains 'Exe') {
     while (($numeric -split '\.').Count -lt 4) { $numeric = "$numeric.0" }
     $bootstrapSource = $bootstrapSource.Replace('__VERSION_NUMERIC__', $numeric)
     $bootstrapSource = $bootstrapSource.Replace('__VERSION_FULL__', $Version)
-    $generatedSource = Join-Path $work 'Bootstrap.generated.cs'
+    New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+    $generatedSource = Join-Path $scratch 'Bootstrap.generated.cs'
     Set-Content -LiteralPath $generatedSource -Value $bootstrapSource -Encoding UTF8
     $exePath = Join-Path $OutputRoot "RandOverlay-Setup-v$Version.exe"
     & $csc /nologo /target:exe /optimize+ "/out:$exePath" "/resource:$zipPath,payload.zip" /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll $generatedSource

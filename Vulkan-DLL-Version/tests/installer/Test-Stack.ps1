@@ -39,7 +39,7 @@ try {
         $layerDll = Join-Path $RunRoot 'RandOverlay_layer.fixture.dll'
         Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\version.dll') -Destination $layerDll
     }
-    & (Join-Path $VulkanRoot 'installer\Build-RandOverlayRelease.ps1') -Format Zip -LayerDll $layerDll -OutputRoot (Join-Path $RunRoot 'dist') | Out-Null
+    & (Join-Path $VulkanRoot 'installer\Build-RandOverlayRelease.ps1') -Format Zip -LayerDll $layerDll -OutputRoot (Join-Path $RunRoot 'dist') -AllowDirty | Out-Null
     $zip = Get-ChildItem -LiteralPath (Join-Path $RunRoot 'dist') -Filter 'RandOverlay-Vulkan-*.zip' | Select-Object -First 1
     Assert-True (Test-Path -LiteralPath (Join-Path $RunRoot 'dist\stack-manifest.json')) 'release publishes stack-manifest.json beside the ZIP'
     Assert-True ((Get-Content -LiteralPath (Join-Path $RunRoot 'dist\SHA256SUMS.txt') -Raw) -match 'stack-manifest\.json') 'SHA256SUMS.txt lists stack-manifest.json'

@@ -10,6 +10,12 @@ End users do not need Git, MinGW, the Vulkan SDK, ImGui, or MinHook.
 .\Build-RandOverlayRelease.ps1 -Format Bat,Zip,Exe
 ```
 
+`release.json` records the commit a release was built from, so the builder refuses to run
+unless Git is available, `HEAD` resolves, and `git status --porcelain` is empty. For a local
+test build from a working tree with uncommitted changes, add `-AllowDirty`; `release.json`
+then still records the real state (`sourceDirty: true`). The installer test suites pass it;
+the release workflow never does.
+
 Outputs are written to `Vulkan-DLL-Version\dist`: a primary self-contained BAT, the
 transparent release ZIP, an optional EXE bootstrapper, and `SHA256SUMS.txt`. The ZIP has fixed
 entry ordering and timestamps. Both bootstrappers carry that exact ZIP, verify its SHA-256
