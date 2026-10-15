@@ -421,13 +421,21 @@ int main(int argc, char** argv) {
         CHECK(c.warning.empty(), "each load starts with no warning");
     }
     {
-        RandOverlayConfig c = loadScratchIni("randoverlay_colors.ini",
-            "[General]\nActivePreset=RAC1\n[Preset.RAC1]\nOverlayColor=#80A0DZ\nBackgroundColor=\n", sharedIni);
         RandOverlayConfig d;
-        CHECK(approx(c.overlayColor[0], d.overlayColor[0]) && approx(c.overlayColor[2], d.overlayColor[2]),
-              "an invalid OverlayColor keeps the default");
-        CHECK(c.warning == "Invalid Preset.RAC1.OverlayColor; using default.",
-              "an invalid colour warns as PS+WPF does; an empty one is not reported");
+        auto sameColor = [](const float a[3], const float b[3]) {
+            return approx(a[0], b[0]) && approx(a[1], b[1]) && approx(a[2], b[2]);
+        };
+        // FFFF differs from the default's leading digits, so a parser that
+        // wrote channels before rejecting the last pair would show here.
+        RandOverlayConfig bad = loadScratchIni("randoverlay_colors.ini",
+            "[General]\nActivePreset=RAC1\n[Preset.RAC1]\nOverlayColor=#FFFFZZ\n", sharedIni);
+        CHECK(sameColor(bad.overlayColor, d.overlayColor), "an invalid OverlayColor keeps every default channel");
+        CHECK(bad.warning == "Invalid Preset.RAC1.OverlayColor; using default.",
+              "an invalid colour warns as PS+WPF does");
+        RandOverlayConfig empty = loadScratchIni("randoverlay_colors_empty.ini",
+            "[General]\nActivePreset=RAC1\n[Preset.RAC1]\nBackgroundColor=\n", sharedIni);
+        CHECK(sameColor(empty.bgColor, d.bgColor) && empty.warning.empty(),
+              "an empty colour counts as absent and is not reported");
         RandOverlayConfig ok = loadScratchIni("randoverlay_colors_ok.ini",
             "[General]\nActivePreset=RAC1\n[Preset.RAC1]\nOverlayColor=FF0000\n", sharedIni);
         CHECK(approx(ok.overlayColor[0], 1.0f) && ok.warning.empty(), "a valid colour without '#' is accepted quietly");
@@ -452,13 +460,22 @@ int main(int argc, char** argv) {
         removeAll(path);
         if (argc > 1) setEnvVar("RANDOVERLAY_INI", argv[1]);
     }
-    // An ini that cannot be used is reported the way AHK and PS+WPF report it,
-    // naming the preset the layer falls back to.
-    CHECK(rocfg_detail::iniProblem("", false, "RAC1") ==
-          "RandOverlay.ini not found; using built-in RAC1 defaults.", "a missing ini is reported");
-    CHECK(rocfg_detail::iniProblem("C:/x/RandOverlay.ini", false, "RAC3") ==
-          "Could not read RandOverlay.ini; using built-in RAC3 defaults.", "an unreadable ini names the preset in use");
-    CHECK(rocfg_detail::iniProblem("C:/x/RandOverlay.ini", true, "RAC1").empty(), "an opened ini is not reported");
+    {
+        // An ini that cannot be used is reported the way AHK and PS+WPF report
+        // it, naming the preset the layer falls back to. loadFrom() takes the
+        // resolved path, since resolution would find the repo's own ini here.
+        RandOverlayConfig none; none.loadFrom("");
+        CHECK(!none.loaded && none.warning == "RandOverlay.ini not found; using built-in RAC1 defaults.",
+              "a missing ini is reported");
+        RandOverlayConfig unreadable;
+        unreadable.loadFrom(tempPath("randoverlay_no_such_dir/RandOverlay.ini"), "RAC3");
+        CHECK(!unreadable.loaded && unreadable.activePreset == "RAC3" &&
+              unreadable.warning == "Could not read RandOverlay.ini; using built-in RAC3 defaults.",
+              "an ini that does not open names the preset the layer falls back to");
+        RandOverlayConfig opened;
+        if (argc > 1) opened.loadFrom(argv[1]);
+        CHECK(argc <= 1 || (opened.loaded && opened.warning.empty()), "the shared ini opens without a warning");
+    }
 
     // The layer reloads with the detected preset on every switch. Each load
     // starts from the defaults, as the AHK and PS+WPF runtimes' one load does,

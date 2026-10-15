@@ -60,6 +60,7 @@ struct RandOverlayConfig {
     bool  loaded              = false;
 
     void load(const std::string& presetOverride = "");
+    void loadFrom(const std::string& iniPath, const std::string& presetOverride = "");
 };
 
 namespace rocfg_detail {
@@ -171,13 +172,17 @@ inline std::string fontSourceKey(const RandOverlayConfig& c) {
 }
 
 inline void RandOverlayConfig::load(const std::string& presetOverride) {
+    loadFrom(rocfg_detail::resolveIniPath(), presetOverride);
+}
+
+// load() with the ini path already resolved ("" when none was found).
+inline void RandOverlayConfig::loadFrom(const std::string& ini, const std::string& presetOverride) {
     using namespace rocfg_detail;
     // Every load starts from the built-in defaults, as the AHK and PS+WPF
     // runtimes' single load does. The layer reloads on each preset switch, and
     // a key the new [Preset.X] section (or the ini) leaves out must read as its
     // default, not as whatever the previous preset set.
     *this = RandOverlayConfig();
-    std::string ini = resolveIniPath();
     iniPathUsed = ini;
 
     // A missing or unreadable ini still applies the preset override and its
