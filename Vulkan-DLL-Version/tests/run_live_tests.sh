@@ -219,10 +219,11 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "validation" ]; then
 fi
 
 # ── Swapchain rebuild: the layer's per-swapchain lifecycle ───────────────────
-# The layer allocates a semaphore and a command buffer per swapchain image.
-# Plans/handoffs/ flags the teardown/re-init path as untested, and Mesa
-# recreates swapchains differently from the Windows drivers it was written
-# against, so exercise it repeatedly with validation watching for leaks.
+# The layer allocates a semaphore and a command buffer per swapchain image, so
+# its per-swapchain cleanup/re-init path is covered by this mode and by the
+# Windows lifecycle-validation scenario. Mesa recreates swapchains differently
+# from the Windows drivers the layer was written against, so exercise it
+# repeatedly with validation watching for leaks.
 if [ "$MODE" = "all" ] || [ "$MODE" = "recreate" ]; then
     echo
     echo "[swapchain recreation]"

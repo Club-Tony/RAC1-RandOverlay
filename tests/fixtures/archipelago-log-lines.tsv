@@ -1,0 +1,45 @@
+# Archipelago log-line contract shared by the AutoHotkey, PowerShell/WPF and Vulkan runtimes.
+# Format: <input line><TAB><expected overlay text>, split on the LAST tab. <none> = not shown.
+# Contract:
+#   1. Prefix ^\[(FileLog|Client) at [^\]]+\]:\s*(.*) is case-sensitive.
+#   2. The message is shown only if it contains one of these keywords, compared
+#      case-insensitively: test, found their, completed their goal, Congratulations,
+#      released all remaining. The keyword check runs before step 3.
+#   3. A trailing location is removed with \s*\(.*\)\s*$ (from the FIRST '(' when the
+#      message ends in ')'), then spaces and tabs are trimmed from both ends.
+#   4. An empty result is not shown.
+# Inputs never contain tabs. Some inputs end in spaces on purpose; keep them.
+
+# Each keyword, one trailing location
+[FileLog at 12:00:00]: Ratchet found their Gold Bolt (Novalis: Tobruk Crash Site)	Ratchet found their Gold Bolt
+[Client at 12:00:00]: Clank found their Swingshot (Kerwan)	Clank found their Swingshot
+[FileLog at 12:00:01]: Ratchet has completed their goal.	Ratchet has completed their goal.
+[FileLog at 12:00:02]: Congratulations on completing the game!	Congratulations on completing the game!
+[FileLog at 12:00:03]: Clank has released all remaining items from their world.	Clank has released all remaining items from their world.
+[FileLog at 12:00:04]: Ratchet found their automated Vulkan overlay test	Ratchet found their automated Vulkan overlay test
+
+# Keywords match in any case
+[FileLog at 12:00:05]: Ratchet FOUND THEIR Hoverboard (Rilgar)	Ratchet FOUND THEIR Hoverboard
+[FileLog at 12:00:06]: CONGRATULATIONS everyone	CONGRATULATIONS everyone
+[FileLog at 12:00:07]: Ratchet entered (Test Area)	Ratchet entered
+[FileLog at 12:00:08]: Notice: latest server build	Notice: latest server build
+
+# The prefix must match exactly
+[filelog at 12:00:09]: Ratchet found their Gold Bolt (Kerwan)	<none>
+[Server at 12:00:10]: Ratchet found their Gold Bolt (Kerwan)	<none>
+Ratchet found their Gold Bolt (Kerwan)	<none>
+[FileLog at 12:00:11]:Ratchet found their Taunter (Eudora)	Ratchet found their Taunter
+[FileLog at 12:00:12]:    Ratchet found their Taunter (Eudora)	Ratchet found their Taunter
+
+# The location strip cuts from the first '(' when the message ends in ')'
+[FileLog at 12:00:13]: Ratchet (Team 2) found their Metal Detector (Hoven)	Ratchet
+[FileLog at 12:00:14]: Ratchet found their Key (Small) (Batalia)	Ratchet found their Key
+[FileLog at 12:00:15]: Ratchet found their Pilot's Helmet (Orxon (Clank))	Ratchet found their Pilot's Helmet
+[FileLog at 12:00:16]: Ratchet found their O2 Mask (Orxon)   	Ratchet found their O2 Mask
+[FileLog at 12:00:17]: Ratchet (P2) found their Gold Bolt	Ratchet (P2) found their Gold Bolt
+[FileLog at 12:00:18]: Ratchet found their Gold Bolt :)	Ratchet found their Gold Bolt :)
+
+# Nothing left to show
+[FileLog at 12:00:19]: (Ratchet found their Gold Bolt)	<none>
+[FileLog at 12:00:20]: Clank: anyone have the hoverboard?	<none>
+[FileLog at 12:00:21]: 	<none>

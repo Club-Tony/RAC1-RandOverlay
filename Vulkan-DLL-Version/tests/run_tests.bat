@@ -13,8 +13,12 @@ REM ============================================================================
 setlocal
 set HERE=%~dp0
 set PROJ=%HERE%..
+REM Same toolchain choice as build.bat: a known x64 MinGW-w64, then PATH, and
+REM RANDOVERLAY_GCC overrides both so the units and the layer share a compiler.
 set GCC=g++
 if exist C:\mingw64\bin\g++.exe set GCC=C:\mingw64\bin\g++
+if not "%RANDOVERLAY_GCC%"=="" set GCC=%RANDOVERLAY_GCC%
+echo Toolchain: %GCC%
 set INI=%PROJ%\..\RandOverlay.ini
 
 if not exist "%PROJ%\build" mkdir "%PROJ%\build"

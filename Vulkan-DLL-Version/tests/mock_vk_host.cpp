@@ -25,12 +25,22 @@
  *   MOCK_RECREATE=<n>       tear down and rebuild the swapchain n times during
  *                           the run, exercising the layer's per-swapchain
  *                           semaphore and command-buffer lifecycle
+ *   MOCK_RECREATE_DESTROY_FIRST=1
+ *                           rebuild by destroying the current swapchain first
+ *                           and then creating one with no oldSwapchain, so the
+ *                           layer sees a destroy with no create behind it
+ *                           (default: create with oldSwapchain, then destroy)
+ *   MOCK_RECREATE_THREAD=1  do the rebuilds on a second thread. An app-side
+ *                           mutex serialises them with the present loop, as
+ *                           Vulkan's external-synchronisation rules require
  *   MOCK_WINDOW_TITLE=<t>   window title (default "RandOverlay Mock Host").
  *                           On Windows the layer only activates once the
  *                           emulator title shows a supported game, e.g.
  *                           "Ratchet & Clank [NPEA00385]"
  *
- * Auto-exits after MOCK_SECONDS or on window close.
+ * Auto-exits after MOCK_SECONDS or on window close, then destroys everything
+ * it created in order (swapchain, device, surface, instance) so validation
+ * sees the layer's teardown too, and prints "[mock] teardown complete".
  */
 #if defined(_WIN32)
   #define WIN32_LEAN_AND_MEAN
@@ -50,6 +60,9 @@
 #include <cmath>
 #include <chrono>
 #include <vector>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
 
 #define VK_CHECK(x) do { VkResult _r = (x); if (_r != VK_SUCCESS) { \
     printf("[mock] VK_CHECK failed (%d) at %s:%d\n", _r, __FILE__, __LINE__); fflush(stdout); \
@@ -118,6 +131,10 @@ static void PumpEvents() {
     while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
 }
 
+static void DestroyHostWindow() {
+    if (g_hwnd) { DestroyWindow(g_hwnd); g_hwnd = nullptr; }
+}
+
 static const char* PlatformSurfaceExtension() { return VK_KHR_WIN32_SURFACE_EXTENSION_NAME; }
 
 static VkSurfaceKHR CreateHostSurface(VkInstance instance) {
@@ -183,6 +200,14 @@ static void PumpEvents() {
         // driven by the runtime cap. Just drain so the queue cannot grow.
         free(ev);
     }
+}
+
+static void DestroyHostWindow() {
+    if (!g_conn) return;
+    xcb_destroy_window(g_conn, g_win);
+    xcb_flush(g_conn);
+    xcb_disconnect(g_conn);
+    g_conn = nullptr;
 }
 
 static const char* PlatformSurfaceExtension() { return VK_KHR_XCB_SURFACE_EXTENSION_NAME; }
@@ -444,19 +469,29 @@ int main() {
 
     // Tear down and rebuild everything that hangs off the swapchain. The layer
     // allocates a semaphore and a command buffer per swapchain image, so this
-    // is what exercises its cleanup/re-init path — the case flagged as
-    // untested in Plans/handoffs/. Run under validation to catch leaks or
-    // double-frees.
+    // exercises its per-swapchain cleanup/re-init path; the Linux recreate
+    // mode and the Windows lifecycle-validation scenario run it under
+    // validation to catch leaks or double-frees. The destroy-first variant is
+    // the shape where the layer sees vkDestroySwapchainKHR with no create
+    // behind it, and must release its views and framebuffers right there.
+    const bool destroyFirst = envIs("MOCK_RECREATE_DESTROY_FIRST", "1");
     auto recreateSwapchain = [&]() {
         vkDeviceWaitIdle(device);
         for (auto fb : fbs) vkDestroyFramebuffer(device, fb, nullptr);
         for (auto v : views) vkDestroyImageView(device, v, nullptr);
 
-        VkSwapchainKHR old = swap;
-        scci.oldSwapchain = old;
-        VK_CHECK(vkCreateSwapchainKHR(device, &scci, nullptr, &swap));
-        vkDestroySwapchainKHR(device, old, nullptr);
-        scci.oldSwapchain = VK_NULL_HANDLE;
+        if (destroyFirst) {
+            vkDestroySwapchainKHR(device, swap, nullptr);
+            swap = VK_NULL_HANDLE;
+            scci.oldSwapchain = VK_NULL_HANDLE;
+            VK_CHECK(vkCreateSwapchainKHR(device, &scci, nullptr, &swap));
+        } else {
+            VkSwapchainKHR old = swap;
+            scci.oldSwapchain = old;
+            VK_CHECK(vkCreateSwapchainKHR(device, &scci, nullptr, &swap));
+            vkDestroySwapchainKHR(device, old, nullptr);
+            scci.oldSwapchain = VK_NULL_HANDLE;
+        }
 
         uint32_t n = 0;
         vkGetSwapchainImagesKHR(device, swap, &n, nullptr);
@@ -482,6 +517,34 @@ int main() {
     const char* recreateEnv = getenv("MOCK_RECREATE");
     const int recreateTarget = recreateEnv ? atoi(recreateEnv) : 0;
     int recreateDone = 0;
+    const bool recreateOnThread = envIs("MOCK_RECREATE_THREAD", "1");
+    if (recreateTarget > 0) {
+        printf("[mock] recreate plan: count=%d destroy_first=%d thread=%d\n",
+               recreateTarget, destroyFirst ? 1 : 0, recreateOnThread ? 1 : 0);
+        fflush(stdout);
+    }
+
+    // The app's own lock over the swapchain and the queue. Vulkan requires the
+    // app to serialise those itself, so the rebuild thread and the present loop
+    // never touch them at the same time; the layer still sees its swapchain
+    // hooks and its present hook arrive on different threads.
+    std::mutex appMutex;
+    std::condition_variable recreateCv;
+    bool recreateRequested = false;
+    bool stopRecreateThread = false;
+    std::thread recreateThread;
+    if (recreateOnThread && recreateTarget > 0) {
+        recreateThread = std::thread([&]() {
+            std::unique_lock<std::mutex> lock(appMutex);
+            for (;;) {
+                recreateCv.wait(lock, [&] { return recreateRequested || stopRecreateThread; });
+                if (stopRecreateThread) break;
+                recreateSwapchain();
+                recreateDone++;
+                recreateRequested = false;
+            }
+        });
+    }
 
     Readback rb;
     const bool readbackOn = wantReadback && canReadback &&
@@ -506,6 +569,19 @@ int main() {
     while (!g_quit) {
         PumpEvents();
         if (nowMs() - start > limitMs) break; // safety auto-exit
+
+        // Take the app lock for the whole frame, letting a requested rebuild
+        // run first. Keep pumping the window while waiting: a driver may need
+        // this thread's message loop to finish building the swapchain.
+        std::unique_lock<std::mutex> frameLock(appMutex, std::defer_lock);
+        for (;;) {
+            if (frameLock.try_lock()) {
+                if (!recreateRequested) break;
+                frameLock.unlock();
+            }
+            PumpEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
 
         uint32_t idx = 0;
         VkResult acq = vkAcquireNextImageKHR(device, swap, UINT64_MAX, imgAvail, VK_NULL_HANDLE, &idx);
@@ -549,13 +625,6 @@ int main() {
         if (pr == VK_ERROR_OUT_OF_DATE_KHR) break;
 
         vkQueueWaitIdle(queue);
-
-        // Spread the rebuilds across the run so the layer re-initialises while
-        // a message is mid-fade, not just on an idle frame.
-        if (recreateDone < recreateTarget && frame > 0 && frame % 120 == 0) {
-            recreateSwapchain();
-            recreateDone++;
-        }
 
         // Measure the overlay on the LAST frame only, once the layer has had
         // time to poll the log and fade its message in.
@@ -603,10 +672,57 @@ int main() {
             }
             break; // measured; nothing more to do
         }
+
+        // Spread the rebuilds across the run so the layer re-initialises while
+        // a message is mid-fade, not just on an idle frame. This comes after
+        // the readback so a rebuild can never swap the image it measures.
+        if (recreateDone < recreateTarget && frame > 0 && frame % 120 == 0) {
+            if (recreateOnThread) {
+                recreateRequested = true;
+                recreateCv.notify_one();
+            } else {
+                recreateSwapchain();
+                recreateDone++;
+            }
+        }
         frame++;
     }
 
     printf("[mock] exiting after %u frames\n", frame); fflush(stdout);
+    if (recreateThread.joinable()) {
+        // Same pumping wait as the frame lock: a rebuild may be in flight.
+        std::unique_lock<std::mutex> stopLock(appMutex, std::defer_lock);
+        while (!stopLock.try_lock()) {
+            PumpEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        stopRecreateThread = true;
+        stopLock.unlock();
+        recreateCv.notify_one();
+        recreateThread.join();
+    }
+    if (recreateTarget > 0) {
+        printf("[mock] swapchain recreations completed: %d of %d\n", recreateDone, recreateTarget);
+        fflush(stdout);
+    }
     vkDeviceWaitIdle(device);
+
+    // Destroy everything in dependency order — swapchain, device, surface,
+    // instance — so the layer's own vkDestroySwapchainKHR/vkDestroyDevice/
+    // vkDestroyInstance handling runs under validation as well.
+    vkDestroySemaphore(device, imgAvail, nullptr);
+    vkDestroySemaphore(device, renderDone, nullptr);
+    if (rb.buffer) vkDestroyBuffer(device, rb.buffer, nullptr);
+    if (rb.memory) vkFreeMemory(device, rb.memory, nullptr);
+    vkDestroyCommandPool(device, pool, nullptr); // frees cmds and rb.cmd too
+    for (auto fb : fbs) vkDestroyFramebuffer(device, fb, nullptr);
+    for (auto v : views) vkDestroyImageView(device, v, nullptr);
+    vkDestroyRenderPass(device, rp, nullptr);
+    vkDestroySwapchainKHR(device, swap, nullptr);
+    vkDestroyDevice(device, nullptr);
+    vkDestroySurfaceKHR(instance, surface, nullptr);
+    vkDestroyInstance(instance, nullptr);
+    DestroyHostWindow();
+    printf("[mock] teardown complete\n"); fflush(stdout);
     return 0;
 }

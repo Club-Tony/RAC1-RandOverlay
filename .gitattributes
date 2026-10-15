@@ -4,3 +4,7 @@ Vulkan-DLL-Version/** linguist-vendored
 # core.autocrlf=true, which would otherwise check them out as CRLF and make the
 # shebang fail with "bad interpreter: /usr/bin/env bash^M" under WSL or Linux.
 *.sh text eol=lf
+
+# Shared parser fixtures are read byte-for-byte by three runtimes. Some rows end in
+# spaces on purpose, so whitespace checks are off for them.
+tests/fixtures/*.tsv text eol=lf -whitespace

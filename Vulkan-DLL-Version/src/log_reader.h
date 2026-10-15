@@ -11,6 +11,61 @@ struct OverlayMessage {
     uint64_t timestamp; // roplat::monotonicMs() when message was detected
 };
 
+namespace rolog {
+
+// The Archipelago line contract shared with the AHK and PS+WPF runtimes and
+// pinned by tests/fixtures/archipelago-log-lines.tsv at the repository root:
+//   1. ^\[(FileLog|Client) at [^\]]+\]:\s*(.*)  - prefix is case-sensitive
+//   2. shown only if the message contains one of the keywords below, compared
+//      case-insensitively (checked before step 3)
+//   3. a trailing location is removed with \s*\(.*\)\s*$ - from the FIRST '('
+//      when the message ends in ')' - then spaces and tabs are trimmed
+//   4. an empty result is not shown
+// Returns the overlay text, or "" when the line is not shown.
+inline std::string formatEvent(const std::string& line) {
+    auto isSpace = [](char c) {
+        return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v';
+    };
+
+    size_t pos;
+    if (line.compare(0, 12, "[FileLog at ") == 0)     pos = 12;
+    else if (line.compare(0, 11, "[Client at ") == 0) pos = 11;
+    else return "";
+    size_t close = line.find(']', pos);
+    if (close == std::string::npos || close == pos) return "";
+    if (close + 1 >= line.size() || line[close + 1] != ':') return "";
+    pos = close + 2;
+    while (pos < line.size() && isSpace(line[pos])) pos++;
+    std::string msg = line.substr(pos);
+
+    std::string lower = msg;
+    for (char& c : lower)
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    static const char* const keywords[] = {
+        "test", "found their", "completed their goal", "congratulations",
+        "released all remaining",
+    };
+    bool interesting = false;
+    for (const char* k : keywords)
+        if (lower.find(k) != std::string::npos) { interesting = true; break; }
+    if (!interesting) return "";
+
+    size_t end = msg.size();
+    while (end > 0 && isSpace(msg[end - 1])) end--;
+    size_t open = msg.find('(');
+    if (end > 0 && msg[end - 1] == ')' && open != std::string::npos && open < end - 1) {
+        while (open > 0 && isSpace(msg[open - 1])) open--;
+        msg.erase(open);
+    }
+
+    size_t b = msg.find_first_not_of(" \t");
+    if (b == std::string::npos) return "";
+    size_t e = msg.find_last_not_of(" \t");
+    return msg.substr(b, e - b + 1);
+}
+
+} // namespace rolog
+
 class LogReader {
 public:
     explicit LogReader(const std::string& logDir = roplat::defaultArchipelagoLogDir())
@@ -35,12 +90,16 @@ public:
 
         if (currentLogFile_.empty()) return messages;
 
-        // Cheap guard: skip the full read unless the file actually grew.
+        // Cheap guard: skip the full read unless the file changed size. A
+        // smaller file means it was truncated in place (same name), which
+        // must restart the scan rather than stall until it regrows past its
+        // old length.
         std::error_code ec;
         uintmax_t fileSize = std::filesystem::file_size(currentLogFile_, ec);
         if (ec) return messages;
 
-        if (fileSize <= lastFileSize_) return messages;
+        if ((uint64_t)fileSize == lastFileSize_) return messages;
+        bool truncated = (uint64_t)fileSize < lastFileSize_;
         lastFileSize_ = (uint64_t)fileSize;
 
         // Read file content
@@ -57,22 +116,17 @@ public:
         }
         file.close();
 
-        if ((int)lines.size() <= lastLineCount_) return messages;
+        // Fewer lines than last time is the other face of a truncation: the
+        // file was cut and has already regrown past its old size. Either way
+        // every current line is new. Only the last match is displayed, so
+        // rescanning a whole file cannot flood the overlay.
+        if (truncated || (int)lines.size() < lastLineCount_) lastLineCount_ = 0;
 
         // Process new lines
         for (int i = lastLineCount_; i < (int)lines.size(); i++) {
-            std::string msg = parseLine(lines[i]);
-            if (!msg.empty()) {
-                // Strip parenthesized location info
-                size_t parenPos = msg.rfind('(');
-                if (parenPos != std::string::npos && msg.back() == ')') {
-                    msg = msg.substr(0, parenPos);
-                    // Trim trailing whitespace
-                    while (!msg.empty() && msg.back() == ' ')
-                        msg.pop_back();
-                }
+            std::string msg = rolog::formatEvent(lines[i]);
+            if (!msg.empty())
                 messages.push_back({msg, roplat::monotonicMs()});
-            }
         }
 
         lastLineCount_ = (int)lines.size();
@@ -138,29 +192,5 @@ private:
         std::error_code ec;
         uintmax_t size = std::filesystem::file_size(currentLogFile_, ec);
         if (!ec) lastFileSize_ = (uint64_t)size;
-    }
-
-    std::string parseLine(const std::string& line) {
-        // Match [FileLog at ...]: message or [Client at ...]: message
-        size_t bracketEnd = line.find("]: ");
-        if (bracketEnd == std::string::npos) return "";
-        if (line[0] != '[') return "";
-
-        // Check prefix is FileLog or Client
-        if (line.find("[FileLog at ") != 0 && line.find("[Client at ") != 0)
-            return "";
-
-        std::string msg = line.substr(bracketEnd + 3);
-
-        // Interest filter
-        if (msg.find("test") != std::string::npos ||
-            msg.find("found their") != std::string::npos ||
-            msg.find("completed their goal") != std::string::npos ||
-            msg.find("Congratulations") != std::string::npos ||
-            msg.find("released all remaining") != std::string::npos) {
-            return msg;
-        }
-
-        return "";
     }
 };

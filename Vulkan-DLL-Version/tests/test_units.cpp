@@ -1,7 +1,11 @@
 /*
  * RandOverlay headless unit tests — the pure-logic parts of the layer that do
  * NOT need a GPU or emulator: the ini reader (config.h), the process gate
- * (process_gate.h), and the Archipelago log parser (log_reader.h).
+ * (process_gate.h), the Archipelago log parser (log_reader.h), and the
+ * dispatch-table lookup (layer_dispatch.h, Vulkan-free part only).
+ *
+ * The log parser is checked against tests/fixtures/archipelago-log-lines.tsv
+ * at the repository root, found next to the RandOverlay.ini given as argv[1].
  *
  * Build + run: tests\run_tests.bat (Windows) or, on either platform,
  *   cmake -S . -B build && cmake --build build -j && ctest --test-dir build
@@ -13,6 +17,7 @@
 #include <thread>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include "platform.h"
 #include "config.h"
 #include "process_gate.h"
@@ -20,6 +25,10 @@
 #include "font_resolver.h"
 #include "arch_client_check.h"
 #include "overlay_layout.h"
+// Only the lookup half of the dispatch header: the rest needs the Vulkan SDK,
+// which run_tests.bat does not put on the include path.
+#define RANDOVERLAY_DISPATCH_LOOKUP_ONLY
+#include "layer_dispatch.h"
 
 namespace fs = std::filesystem;
 
@@ -52,6 +61,26 @@ static void appendFile(const std::string& path, const char* contents) {
 static void removeAll(const std::string& path) {
     std::error_code ec; fs::remove_all(path, ec);
 }
+
+// Writes `body` to a scratch ini, loads it, and points RANDOVERLAY_INI back at
+// the shared ini (argv[1]) afterwards.
+static RandOverlayConfig loadScratchIni(const char* leaf, const std::string& body,
+                                        const char* sharedIni) {
+    std::string path = tempPath(leaf);
+    writeFile(path, body.c_str());
+    setEnvVar("RANDOVERLAY_INI", path.c_str());
+    RandOverlayConfig c; c.load();
+    removeAll(path);
+    if (sharedIni) setEnvVar("RANDOVERLAY_INI", sharedIni);
+    return c;
+}
+
+// A stand-in for a dispatch table: the lookup is the same template either way.
+static void fakeEntryPoint() {}
+struct FakeDispatch {
+    void (*entry)();
+    int id;
+};
 
 int main(int argc, char** argv) {
     printf("=== RandOverlay unit tests ===\n\n");
@@ -150,6 +179,40 @@ int main(int argc, char** argv) {
     CHECK(rogate::detectPreset("pcsx2-qt", "RAC1,RAC2,RAC3", noTitles, noTitles, false).empty(),
           "ambiguous PCSX2 with no title signals refuses to guess");
 
+    // ── dispatch-table lookup ─────────────────────────────────────────────
+    // A present for a queue the layer never recorded (or whose device was
+    // already destroyed) must see a miss, not a zero-filled table it would
+    // then call through.
+    printf("[dispatch lookup]\n");
+    {
+        std::mutex mutex;
+        std::unordered_map<void*, FakeDispatch> map;
+        int keyA = 0, keyB = 0;
+        FakeDispatch out = { nullptr, -1 };
+        CHECK(!rodispatch::tryGet(mutex, map, (void*)&keyA, out),
+              "an unrecorded dispatch key is reported as a miss");
+        CHECK(map.empty(), "a miss does not insert an all-null table");
+        CHECK(out.entry == nullptr && out.id == -1, "a miss leaves the caller's table untouched");
+
+        map[(void*)&keyA] = { &fakeEntryPoint, 7 };
+        CHECK(rodispatch::tryGet(mutex, map, (void*)&keyA, out) &&
+              out.entry == &fakeEntryPoint && out.id == 7,
+              "a recorded key copies its table out");
+        CHECK(!rodispatch::tryGet(mutex, map, (void*)&keyB, out) && map.size() == 1,
+              "a different key still misses without inserting");
+
+        // The copy is the caller's own: erasing the entry (vkDestroyDevice on
+        // another thread) cannot leave it dangling the way a reference would.
+        map.erase((void*)&keyA);
+        CHECK(out.entry == &fakeEntryPoint && out.id == 7,
+              "a copied table survives its map entry being erased");
+        CHECK(!rodispatch::tryGet(mutex, map, (void*)&keyA, out),
+              "an erased key is a miss again");
+        bool unlocked = mutex.try_lock();
+        if (unlocked) mutex.unlock();
+        CHECK(unlocked, "the lookup releases its lock before returning");
+    }
+
     // ── platform abstraction ──────────────────────────────────────────────
     printf("[platform]\n");
     CHECK(!roplat::selfExePath().empty(), "selfExePath() resolves");
@@ -214,6 +277,7 @@ int main(int argc, char** argv) {
     CHECK(cfg.clientComponent == "Ratchet & Clank Client",
           "RAC1 ClientComponent = Ratchet & Clank Client");
     CHECK(cfg.enabledPresets == "RAC1", "legacy INI falls back to ActivePreset as enabled set");
+    CHECK(cfg.warning.empty(), "the shared ini raises no config warning");
 
     // Existing installations preserve their INI during upgrades. Before
     // VulkanFontSize existed they only had WpfFontSize, which must not lower
@@ -267,6 +331,96 @@ int main(int argc, char** argv) {
         if (argc > 1) setEnvVar("RANDOVERLAY_INI", argv[1]);
     }
 
+    // ActivePreset is case-insensitive and validated, as in AHK and PS+WPF. On
+    // Linux it is the only thing telling RAC2 from RAC3, so a lowercase value
+    // silently selecting RAC1 would pick the wrong game.
+    printf("[config ActivePreset]\n");
+    const char* sharedIni = argc > 1 ? argv[1] : nullptr;
+    {
+        RandOverlayConfig c = loadScratchIni("randoverlay_preset_case.ini",
+            "[General]\nActivePreset= rac2 \n"
+            "[Preset.RAC2]\nVerticalPercent=0.42\nVulkanFontSize=40\n", sharedIni);
+        CHECK(c.activePreset == "RAC2", "ActivePreset=rac2 resolves to RAC2");
+        CHECK(approx(c.verticalPercent, 0.42f) && c.fontSize == 40,
+              "ActivePreset=rac2 honours the [Preset.RAC2] section");
+        CHECK(c.emulatorProcs.find("pcsx2") != std::string::npos &&
+              c.clientComponent == "Ratchet & Clank 2 Client",
+              "ActivePreset=rac2 takes the RAC2 preset defaults");
+        CHECK(c.enabledPresets == "RAC2", "legacy EnabledPresets fallback uses the normalised preset");
+        CHECK(c.warning.empty(), "a known preset in any case raises no warning");
+    }
+    {
+        RandOverlayConfig c = loadScratchIni("randoverlay_preset_unknown.ini",
+            "[General]\nActivePreset=RAC4\n"
+            "[Preset.RAC1]\nVerticalPercent=0.3\n"
+            "[Preset.RAC4]\nVerticalPercent=0.9\n", sharedIni);
+        CHECK(c.activePreset == "RAC1", "ActivePreset=RAC4 falls back to RAC1");
+        CHECK(approx(c.verticalPercent, 0.3f) && c.emulatorProcs == "rpcs3.exe",
+              "ActivePreset=RAC4 reads [Preset.RAC1], not [Preset.RAC4]");
+        CHECK(c.warning == "Unknown ActivePreset 'RAC4'; using RAC1 defaults.",
+              "ActivePreset=RAC4 warns in the AHK/PS wording");
+        printf("    warning: %s\n", c.warning.c_str());
+    }
+
+    // Numeric values are rejected, not clamped, exactly as AHK and PS+WPF do:
+    // whole-string integers with a minimum, and VerticalPercent within 0..1.
+    // The first problem is the one reported.
+    printf("[config numeric validation]\n");
+    {
+        RandOverlayConfig c = loadScratchIni("randoverlay_numeric_bad.ini",
+            "[General]\nActivePreset=RAC1\nDisplayMs=0\nPollMs=12abc\nFadeInMs=-1\nFadeOutMs=0\n"
+            "[Preset.RAC1]\nVerticalPercent=5.0\nVulkanFontSize=0\n", sharedIni);
+        CHECK(c.displayMs == 5000,  "DisplayMs=0 is rejected (minimum 1)");
+        CHECK(c.pollMs == 1500,     "PollMs=12abc is rejected, not read as 12");
+        CHECK(c.fadeInMs == 300,    "FadeInMs=-1 is rejected (minimum 0)");
+        CHECK(c.fadeOutMs == 0,     "FadeOutMs=0 is accepted (minimum 0)");
+        CHECK(approx(c.verticalPercent, 0.17f), "VerticalPercent=5.0 is rejected, not clamped");
+        CHECK(c.fontSize == 48,     "VulkanFontSize=0 is rejected (minimum 1)");
+        CHECK(c.warning == "Invalid General.DisplayMs; using default.",
+              "the first invalid value is the one reported");
+    }
+    {
+        RandOverlayConfig c = loadScratchIni("randoverlay_numeric_poll.ini",
+            "[General]\nPollMs=12abc\n", sharedIni);
+        CHECK(c.pollMs == 1500 && c.warning == "Invalid General.PollMs; using default.",
+              "a partial number warns as Invalid General.PollMs");
+    }
+    {
+        RandOverlayConfig c = loadScratchIni("randoverlay_numeric_vp.ini",
+            "[General]\nActivePreset=RAC1\n[Preset.RAC1]\nVerticalPercent=5.0\n", sharedIni);
+        CHECK(approx(c.verticalPercent, 0.17f) &&
+              c.warning == "Invalid Preset.RAC1.VerticalPercent; using default.",
+              "VerticalPercent=5.0 warns as Invalid Preset.RAC1.VerticalPercent");
+    }
+    {
+        const char* rejected[] = { "-0.1", "1.5", "0.5x", ".5", "1.", "abc", "1e-1" };
+        for (const char* v : rejected) {
+            std::string body = std::string("[General]\nActivePreset=RAC1\n[Preset.RAC1]\nVerticalPercent=") + v + "\n";
+            RandOverlayConfig c = loadScratchIni("randoverlay_numeric_vp2.ini", body, sharedIni);
+            std::string label = std::string("VerticalPercent=") + v + " is rejected";
+            CHECK(approx(c.verticalPercent, 0.17f) && !c.warning.empty(), label.c_str());
+        }
+        const char* accepted[] = { "0", "1", "1.0", "0.25" };
+        const float values[]   = { 0.0f, 1.0f, 1.0f, 0.25f };
+        for (int i = 0; i < 4; i++) {
+            std::string body = std::string("[General]\nActivePreset=RAC1\n[Preset.RAC1]\nVerticalPercent=") + accepted[i] + "\n";
+            RandOverlayConfig c = loadScratchIni("randoverlay_numeric_vp3.ini", body, sharedIni);
+            std::string label = std::string("VerticalPercent=") + accepted[i] + " is accepted";
+            CHECK(approx(c.verticalPercent, values[i]) && c.warning.empty(), label.c_str());
+        }
+    }
+    {
+        RandOverlayConfig c = loadScratchIni("randoverlay_numeric_edge.ini",
+            "[General]\nDisplayMs=99999999999\nPollMs=\nFadeInMs=+5\n", sharedIni);
+        CHECK(c.displayMs == 5000, "an out-of-range integer is rejected");
+        CHECK(c.pollMs == 1500,    "an empty value keeps the default");
+        CHECK(c.fadeInMs == 300,   "a leading '+' is rejected like AHK's ^-?\\d+$");
+        CHECK(c.warning == "Invalid General.DisplayMs; using default.",
+              "an empty value is not reported, an out-of-range one is");
+        c.load(); // RANDOVERLAY_INI points at the shared, clean ini again
+        CHECK(c.warning.empty(), "each load starts with no warning");
+    }
+
     { float c[3] = {9,9,9}; CHECK(!rocfg_detail::parseHexColor("#ZZZZZZ", c), "malformed hex rejected"); }
     { float c[3] = {0,0,0}; CHECK(rocfg_detail::parseHexColor("#FF0000", c) && approx(c[0],1.0f) &&
                                   approx(c[1],0.0f) && approx(c[2],0.0f), "#FF0000 -> (1,0,0)"); }
@@ -306,7 +460,46 @@ int main(int argc, char** argv) {
     }
     appendFile(logf, "[Client at 12:00:01]: routine chatter line\n");
     CHECK(lr.poll().empty(), "non-event chatter is ignored");
+    appendFile(logf, "[Client at 12:00:02]: (Ratchet found their Gold Bolt)\n");
+    CHECK(lr.poll().empty(), "an event that strips to nothing is never emitted as empty text");
     removeAll(dir);
+
+    // ── Shared line contract (same fixture as the AHK and PS+WPF runtimes) ─
+    // Rows are "<input><TAB><expected>", split on the LAST tab; "<none>" means
+    // not shown; '#' and blank lines are skipped. Some inputs end in spaces on
+    // purpose, so nothing but '\r' is trimmed from a row.
+    printf("[log_reader line contract]\n");
+    {
+        std::string fixture;
+        if (argc > 1)
+            fixture = (fs::path(argv[1]).parent_path() / "tests" / "fixtures" /
+                       "archipelago-log-lines.tsv").string();
+        std::ifstream in(fixture, std::ios::binary);
+        CHECK(in.is_open(), "shared fixture tests/fixtures/archipelago-log-lines.tsv opened");
+        if (!in.is_open())
+            printf("    looked for: %s (pass the repo-root RandOverlay.ini as argv[1])\n",
+                   fixture.empty() ? "(no argv[1])" : fixture.c_str());
+        int rows = 0, malformed = 0;
+        std::string row;
+        while (std::getline(in, row)) {
+            if (!row.empty() && row.back() == '\r') row.pop_back();
+            if (row.empty() || row[0] == '#') continue;
+            size_t tab = row.rfind('\t');
+            if (tab == std::string::npos) { malformed++; continue; }
+            std::string input = row.substr(0, tab);
+            std::string expected = row.substr(tab + 1);
+            if (expected == "<none>") expected.clear();
+            std::string got = rolog::formatEvent(input);
+            rows++;
+            std::string label = "fixture: " + input;
+            CHECK(got == expected, label.c_str());
+            if (got != expected)
+                printf("    expected \"%s\", got \"%s\"\n", expected.c_str(), got.c_str());
+        }
+        CHECK(malformed == 0, "every fixture row has a tab-separated expectation");
+        CHECK(rows > 0, "fixture contributed rows");
+        printf("    %d fixture rows\n", rows);
+    }
 
     // ── Log selection parity (AHK/PS: any *.txt except Generate_/Server_) ─
     printf("[log_reader selection parity]\n");
@@ -329,6 +522,45 @@ int main(int argc, char** argv) {
         CHECK(msgs2.back().text.find("Persuader") != std::string::npos,
               "event came from client log, not the newer Generate_ decoy");
     removeAll(dir2);
+
+    // ── Rotation in place (same file name, truncated and rewritten) ───────
+    // The size guard used to skip any poll where the file was not larger than
+    // before, so a truncated log showed nothing until it outgrew its old size.
+    printf("[log_reader truncation]\n");
+    {
+        std::string dir3 = tempPath("randoverlay_test_logs3");
+        removeAll(dir3);
+        fs::create_directories(dir3);
+        std::string rot = (fs::path(dir3) / "Client_rotation.txt").string();
+        writeFile(rot,
+            "[Client at 1:00:00]: chatter chatter chatter chatter chatter chatter\n"
+            "[Client at 1:00:01]: chatter chatter chatter chatter chatter chatter\n"
+            "[Client at 1:00:02]: chatter chatter chatter chatter chatter chatter\n"
+            "[Client at 1:00:03]: chatter chatter chatter chatter chatter chatter\n");
+        LogReader lr3(dir3); // seeds on 4 lines
+
+        writeFile(rot, "[Client at 2:00:00]: Ratchet found their Gold Bolt (Kerwan)\n");
+        auto m1 = lr3.poll();
+        CHECK(!m1.empty() && m1.back().text == "Ratchet found their Gold Bolt",
+              "a log truncated to fewer bytes is read again from the top");
+
+        appendFile(rot, "[Client at 2:00:01]: Clank found their Swingshot (Kerwan)\n");
+        auto m2 = lr3.poll();
+        CHECK(m2.size() == 1 && m2.back().text == "Clank found their Swingshot",
+              "the truncated log keeps being tailed as it regrows");
+
+        CHECK(lr3.poll().empty(), "an unchanged log yields nothing");
+
+        // Cut and already regrown past its old size before the next poll:
+        // only the line count shows it.
+        std::string longLine = "[Client at 3:00:00]: Ratchet found their " +
+                               std::string(200, 'x') + " (Somewhere)\n";
+        writeFile(rot, longLine.c_str());
+        auto m3 = lr3.poll();
+        CHECK(m3.size() == 1 && m3.back().text.find("Ratchet found their xxx") == 0,
+              "a log rewritten larger but with fewer lines is read from the top");
+        removeAll(dir3);
+    }
 
     // A missing log directory must degrade quietly, not throw. On Linux the
     // default path frequently does not exist until Archipelago has run once.
