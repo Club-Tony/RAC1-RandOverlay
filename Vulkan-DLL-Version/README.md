@@ -232,7 +232,9 @@ untouched. The loader ignores `VK_IMPLICIT_LAYER_PATH` in an elevated session, s
 then `C:\VulkanSDK\1.4.341.1`. The runner builds the mock hosts with that compiler and passes
 it to `build.bat` (`RANDOVERLAY_GCC`, plus `RANDOVERLAY_GCC_C`/`RANDOVERLAY_AR`/
 `RANDOVERLAY_WINDRES` found beside it, and `VULKAN_SDK`) and to `tests\run_tests.bat`, so the
-layer, the unit tests and the mock hosts share one toolchain.
+layer, the unit tests and the mock hosts share one toolchain. The compiler's own folder goes
+first on `PATH` for those builds, because an MSYS2 g++ loads its runtime DLLs from there and
+MSYS2 does not add that folder to `PATH` itself.
 
 Artifacts are written under `tests\live\artifacts` and are gitignored. Real RPCS3/PCSX2
 game launching remains a manual certification step because game paths and emulator state
