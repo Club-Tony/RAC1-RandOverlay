@@ -99,5 +99,9 @@ prerequisites, install/rerun/configure, unrelated-layer preservation, tamper det
 repair, rollback, configuration preservation, and uninstall. It never writes production
 Vulkan registration or Archipelago logs.
 
+Both suites set `RANDOVERLAY_ALLOW_RUNNING_EMULATOR=1` so a running RPCS3 or PCSX2 does not
+block their scratch installs; the "refuses while rpcs3 is running" case clears it and starts
+a fake. The real installer never sets it and still requires both emulators to be closed.
+
 See the repo-root `SIGNING.md`, `PRIVACY.md`, and the Vulkan release workflow for trust,
 network, and publication rules.
