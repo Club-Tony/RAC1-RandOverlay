@@ -139,6 +139,11 @@ function Get-ToolchainEnvironment {
         $sibling = Get-GccSiblingPath $GccPath $entry.Value
         if ($sibling) { $environment[$entry.Key] = $sibling }
     }
+    # g++ runs cc1plus, which loads its runtime DLLs from the compiler's own bin
+    # folder. MSYS2 does not put that folder on PATH, so put it first here.
+    if ([IO.Path]::IsPathRooted($GccPath)) {
+        $environment["PATH"] = [IO.Path]::GetDirectoryName($GccPath) + [IO.Path]::PathSeparator + $env:PATH
+    }
     return $environment
 }
 
@@ -663,11 +668,11 @@ if ($Mode -eq "preflight") {
         # The layer, the unit tests and the mock hosts share one toolchain.
         Invoke-WithEnvironment (Get-ToolchainEnvironment) {
             Invoke-Checked "Vulkan build" "cmd.exe" @("/d", "/c", ".\build.bat", "--no-pause") $VulkanRoot
+            Build-MockHosts
         }
-        Build-MockHosts
         if ($LayerSource -eq "Build") { Initialize-BuildLayerManifest }
         if ($Mode -eq "all") {
-            Invoke-WithEnvironment @{ RANDOVERLAY_GCC = $GccPath } {
+            Invoke-WithEnvironment (Get-ToolchainEnvironment) {
                 Invoke-Checked "unit tests" "cmd.exe" @("/d", "/c", ".\tests\run_tests.bat") $VulkanRoot
             }
             Invoke-Checked "AHK and PowerShell regression" "powershell.exe" @("-NoProfile", "-File", (Join-Path $RepoRoot "Test-RandOverlay.ps1")) $RepoRoot
