@@ -447,6 +447,39 @@ function Measure-OverlayBandDifference([string]$BeforePath, [string]$AfterPath, 
     }
 }
 
+# Height in pixels of the region that differs between two captures: the overlay
+# panel, whose height follows the font size (plus fixed padding). Only rows from
+# 10% to 65% of the capture are compared, which leaves out the title bar (a
+# retitle changes it) and still holds a two-line panel placed at 17%, and an
+# 8 px margin is skipped at each side, where the window border recolours when
+# the window gains or loses activation.
+function Measure-ChangedRowSpan([string]$BeforePath, [string]$AfterPath) {
+    $before = [System.Drawing.Bitmap]::new($BeforePath)
+    $after = [System.Drawing.Bitmap]::new($AfterPath)
+    try {
+        if ($before.Width -ne $after.Width -or $before.Height -ne $after.Height) { throw "screenshot dimensions differ" }
+        $first = -1
+        $last = -1
+        for ($y = [int]($before.Height * 0.10); $y -lt [int]($before.Height * 0.65); $y++) {
+            for ($x = 8; $x -lt $before.Width - 8; $x += 3) {
+                $a = $before.GetPixel($x, $y)
+                $b = $after.GetPixel($x, $y)
+                $delta = [Math]::Abs([int]$a.R - [int]$b.R) + [Math]::Abs([int]$a.G - [int]$b.G) + [Math]::Abs([int]$a.B - [int]$b.B)
+                if ($delta -ge 48) {
+                    if ($first -lt 0) { $first = $y }
+                    $last = $y
+                    break
+                }
+            }
+        }
+        if ($first -lt 0) { return 0 }
+        return $last - $first + 1
+    } finally {
+        $before.Dispose()
+        $after.Dispose()
+    }
+}
+
 function Format-ExitCode([int]$ExitCode) {
     $bits = [BitConverter]::ToUInt32([BitConverter]::GetBytes($ExitCode), 0)
     return "0x{0:X8}" -f $bits
@@ -480,7 +513,12 @@ function Invoke-MockScenario {
         # Exact number of "[mock] swapchain recreated" lines expected on stdout.
         [int]$ExpectRecreates = 0,
         # Require the mock's ordered-teardown line.
-        [switch]$ExpectTeardown
+        [switch]$ExpectTeardown,
+        # The Archipelago event the scenario writes to the log.
+        [string]$EventText = "Ratchet found their automated Vulkan overlay test",
+        # With -Visual and a mid-run MOCK_RETITLE at 9 s: capture the event before
+        # and after the preset switch and require the overlay panel to grow.
+        [switch]$MeasureFontSwitch
     )
     if (-not $WindowTitle) {
         $WindowTitle = switch ($Preset) {
@@ -578,13 +616,38 @@ function Invoke-MockScenario {
             }
         }
 
-        if ($Visual) {
+        $eventLine = "[FileLog at 00:00:01]: $EventText"
+        if ($Visual -and $MeasureFontSwitch) {
+            # Startup banner gone by 6.2 s; event at the old preset's size; the
+            # retitle at 9 s switches presets within one 1.5 s poll; a second event
+            # after the first has faded is drawn at the new size.
+            [System.Windows.Forms.Cursor]::Position = [System.Drawing.Point]::new(0, [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Bottom - 1)
+            Start-Sleep -Milliseconds 6200
+            $blankPath = Join-Path $ArtifactRoot "$Name-blank.png"
+            $beforePath = Join-Path $ArtifactRoot "$Name-before-switch.png"
+            $afterPath = Join-Path $ArtifactRoot "$Name-after-switch.png"
+            Save-WindowScreenshot $hwnd $blankPath
+            Add-Content -LiteralPath $testData.Log -Value $eventLine
+            Start-Sleep -Milliseconds 2200
+            Save-WindowScreenshot $hwnd $beforePath
+            Start-Sleep -Milliseconds 4000
+            Add-Content -LiteralPath $testData.Log -Value $eventLine
+            Start-Sleep -Milliseconds 2200
+            Save-WindowScreenshot $hwnd $afterPath
+            $beforeRows = Measure-ChangedRowSpan $blankPath $beforePath
+            $afterRows = Measure-ChangedRowSpan $blankPath $afterPath
+            Write-Host "[artifact] $beforePath"
+            Write-Host "[artifact] $afterPath"
+            Write-Host "[visual] overlay panel height: $beforeRows px before the switch, $afterRows px after"
+            if ($beforeRows -lt 10) { throw "no overlay panel before the preset switch ($beforeRows px)" }
+            if ($afterRows -lt 1.3 * $beforeRows) { throw "overlay panel did not grow after the preset switch ($beforeRows -> $afterRows px)" }
+        } elseif ($Visual) {
             [System.Windows.Forms.Cursor]::Position = [System.Drawing.Point]::new(0, [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Bottom - 1)
             Start-Sleep -Milliseconds 6200
             $beforePath = Join-Path $ArtifactRoot "$Name-before.png"
             $afterPath = Join-Path $ArtifactRoot "$Name-after.png"
             Save-WindowScreenshot $hwnd $beforePath
-            Add-Content -LiteralPath $testData.Log -Value "[FileLog at 00:00:01]: Ratchet found their automated Vulkan overlay test"
+            Add-Content -LiteralPath $testData.Log -Value $eventLine
             Start-Sleep -Milliseconds 2200
             Save-WindowScreenshot $hwnd $afterPath
             $changed = Measure-OverlayBandDifference $beforePath $afterPath 0.17
@@ -596,7 +659,7 @@ function Invoke-MockScenario {
             Write-Host "[visual] changed overlay-band samples: $changed"
         } elseif (-not $Disabled) {
             Start-Sleep -Milliseconds 700
-            Add-Content -LiteralPath $testData.Log -Value "[FileLog at 00:00:01]: Ratchet found their automated Vulkan overlay test"
+            Add-Content -LiteralPath $testData.Log -Value $eventLine
         }
 
         if (-not $process.WaitForExit(20000)) {
@@ -639,7 +702,7 @@ function Invoke-MockScenario {
                 $logText -match 'Archipelago is not running') {
                 throw "layer did not stay idle for a non-R&C game"
             }
-        } elseif ($logText -notmatch 'Render resources ready' -or $logText -notmatch 'Message: Ratchet found their automated Vulkan overlay test') {
+        } elseif ($logText -notmatch 'Render resources ready' -or $logText -notmatch ('Message: ' + [regex]::Escape($EventText))) {
             throw "layer did not initialize and ingest the injected event"
         }
         if ($Validation -and (($stdout + "`n" + $stderr) -match 'Validation (Error|Warning)|WARNING-vkGetDeviceProcAddr-device')) {
@@ -674,10 +737,15 @@ $VulkanSdkSource = $sdkResolution.Source
 # PCSX2 title naming both RAC2 and RAC3: the layer must refuse to guess.
 $AmbiguousRac2Rac3Title = "Ratchet & Clank: Going Commando / Up Your Arsenal | PCSX2"
 # A game switch with the swapchain kept: PCSX2 boots RAC2, then RAC3, whose preset
-# has a bigger font in another face. At the mock's height (<= 720 px) the layout
-# scale is 0.75, so 48 -> 36 px and 80 -> 60 px.
-$FontSwitchIni = @{ "Preset.RAC3/VulkanFontSize" = "80"; "Preset.RAC3/FontFamily" = "Consolas" }
-$FontSwitchLog = @('font=36px', 'Automatic preset: RAC2 -> RAC3', '(?i)Font loaded: \S*consola\S* \(60px\)')
+# has a bigger font. At the mock's height (<= 720 px) the layout scale is 0.75, so
+# 48 -> 36 px and 80 -> 60 px. The short event fits one line at 60 px, so the
+# primary face (not the wrap fallback) is what gets drawn.
+$FontSwitchTitle = "Ratchet & Clank: Up Your Arsenal | PCSX2"
+$FontSwitchEvent = "Clank found their Bolt"
+$FontFaceSwitchIni = @{ "Preset.RAC3/VulkanFontSize" = "80"; "Preset.RAC3/FontFamily" = "Consolas" }
+$FontFaceSwitchLog = @('font=36px', 'Automatic preset: RAC2 -> RAC3', '(?i)Font loaded: \S*consola\S* \(60px\)')
+$FontSizeSwitchIni = @{ "Preset.RAC3/VulkanFontSize" = "80" }
+$FontSizeSwitchLog = @('font=36px', 'Automatic preset: RAC2 -> RAC3', 'Font size now 60px')
 
 New-Item -ItemType Directory -Path $ArtifactRoot -Force | Out-Null
 if ($Mode -eq "preflight") {
@@ -716,11 +784,13 @@ if ($Mode -eq "preflight") {
             Invoke-MockScenario -Name "rac1-swapchain-lifecycle-validation" -Preset RAC1 -Executable rpcs3.exe -Validation `
                 -MockEnv @{ MOCK_SECONDS = "10"; MOCK_RECREATE = "3"; MOCK_RECREATE_DESTROY_FIRST = "1"; MOCK_RECREATE_THREAD = "1" } `
                 -ExpectRecreates 3 -ExpectTeardown
-            # The overlay follows the new preset's font size and face without a
-            # swapchain rebuild; the atlas change must not upset validation.
+            # A face and size switch with the swapchain kept: the old fonts are
+            # removed from the atlas and the new face drawn (the event stays on
+            # screen across the switch) under validation. The mock keeps one frame
+            # in flight, so this cannot speak for frames still queued on the GPU.
             Invoke-MockScenario -Name "rac2-rac3-font-switch-validation" -Preset RAC2 -EnabledPresets "RAC2,RAC3" -Executable pcsx2-qt.exe -Validation `
-                -IniValues $FontSwitchIni -ExpectLog $FontSwitchLog `
-                -MockEnv @{ MOCK_SECONDS = "8"; MOCK_RETITLE = "Ratchet & Clank: Up Your Arsenal | PCSX2"; MOCK_RETITLE_MS = "2000" }
+                -IniValues $FontFaceSwitchIni -ExpectLog $FontFaceSwitchLog -EventText $FontSwitchEvent `
+                -MockEnv @{ MOCK_SECONDS = "8"; MOCK_RETITLE = $FontSwitchTitle; MOCK_RETITLE_MS = "2000" }
         }
         if ($Mode -in @("all", "visual")) {
             Invoke-MockScenario -Name "rac1-windowed-visual" -Preset RAC1 -Executable rpcs3.exe -Visual
@@ -728,11 +798,11 @@ if ($Mode -eq "preflight") {
             Invoke-MockScenario -Name "rac3-visual" -Preset RAC3 -Executable pcsx2-qt.exe -Visual
             Invoke-MockScenario -Name "rac2-rac3-ambiguous-visual" -Preset RAC2 -EnabledPresets "RAC2,RAC3" -Executable pcsx2-qt.exe `
                 -WindowTitle $AmbiguousRac2Rac3Title -ExpectIdle -Visual -ExpectLog @('enabled=RAC2,RAC3')
-            # The event arrives after the switch, so the frame shows the RAC3 size
-            # (the message wraps at 60 px, and wrapped text uses the digit font).
+            # A size-only switch: the same event drawn before and after it, and the
+            # overlay panel must grow with the font; no face is reloaded.
             Invoke-MockScenario -Name "rac2-rac3-font-switch-visual" -Preset RAC2 -EnabledPresets "RAC2,RAC3" -Executable pcsx2-qt.exe -Visual `
-                -IniValues $FontSwitchIni -ExpectLog $FontSwitchLog `
-                -MockEnv @{ MOCK_RETITLE = "Ratchet & Clank: Up Your Arsenal | PCSX2"; MOCK_RETITLE_MS = "2000" }
+                -MeasureFontSwitch -IniValues $FontSizeSwitchIni -ExpectLog $FontSizeSwitchLog -RejectLog @('Font loaded: .*\(60px\)') `
+                -EventText $FontSwitchEvent -MockEnv @{ MOCK_SECONDS = "17"; MOCK_RETITLE = $FontSwitchTitle; MOCK_RETITLE_MS = "9000" }
         }
     } catch {
         Add-Failure $Mode $_.Exception.Message
