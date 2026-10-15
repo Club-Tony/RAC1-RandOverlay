@@ -742,7 +742,10 @@ $AmbiguousRac2Rac3Title = "Ratchet & Clank: Going Commando / Up Your Arsenal | P
 # primary face (not the wrap fallback) is what gets drawn.
 $FontSwitchTitle = "Ratchet & Clank: Up Your Arsenal | PCSX2"
 $FontSwitchEvent = "Clank found their Bolt"
-$FontFaceSwitchIni = @{ "Preset.RAC3/VulkanFontSize" = "80"; "Preset.RAC3/FontFamily" = "Consolas" }
+# RAC2 gets a stock face too: with HandelGothic BT absent, RAC2 would fall back to
+# Bahnschrift alone and load no separate digit font, leaving the digit-font removal
+# untested. Segoe UI + Bahnschrift before, Consolas + Bahnschrift after.
+$FontFaceSwitchIni = @{ "Preset.RAC2/FontFamily" = "Segoe UI"; "Preset.RAC3/VulkanFontSize" = "80"; "Preset.RAC3/FontFamily" = "Consolas" }
 # Consolas plus the Bahnschrift digit font: two fonts once the old ones are removed.
 $FontFaceSwitchLog = @('font=36px', 'Automatic preset: RAC2 -> RAC3', '(?i)Font loaded: \S*consola\S* \(60px\)',
                        'Font set replaced; the atlas holds 2 fonts')
