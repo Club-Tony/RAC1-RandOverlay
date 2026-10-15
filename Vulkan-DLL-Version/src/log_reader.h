@@ -66,12 +66,22 @@ inline std::string formatEvent(const std::string& line) {
 
 } // namespace rolog
 
+// Tails the newest Archipelago log under the tail contract shared with the AHK
+// and PS+WPF runtimes. The reader holds the byte offset read up to, the file
+// size at the last poll, and up to kAnchorBytes bytes just before the offset
+// (the anchor). A poll reads only the bytes after the offset and consumes only
+// complete lines, so a line still being written is read whole on a later poll.
+// A file smaller than at the last poll was truncated in place; one whose anchor
+// bytes changed was rewritten and has already regrown past the offset. Both are
+// read again from the top. Only the last match is displayed, so that cannot
+// flood the overlay. poll() runs on the present path, so its cost must not grow
+// with the log: a whole-file re-read of a 10 MB log took ~33 ms per poll.
 class LogReader {
 public:
     explicit LogReader(const std::string& logDir = roplat::defaultArchipelagoLogDir())
-        : logDir_(logDir), lastLineCount_(0), lastFileSize_(0) {
+        : logDir_(logDir), readOffset_(0), lastFileSize_(0) {
         findNewestLog();
-        seedLineCount();
+        seedAtEnd();
     }
 
     // Which log file is currently being tailed (diagnostics).
@@ -85,59 +95,67 @@ public:
         std::string newest = findNewestLogPath();
         if (!newest.empty() && newest != currentLogFile_) {
             currentLogFile_ = newest;
-            seedLineCount();
+            seedAtEnd();
         }
 
         if (currentLogFile_.empty()) return messages;
 
-        // Cheap guard: skip the full read unless the file changed size. A
-        // smaller file means it was truncated in place (same name), which
-        // must restart the scan rather than stall until it regrows past its
-        // old length.
+        // Cheap guard: nothing to read while the size is unchanged.
         std::error_code ec;
         uintmax_t fileSize = std::filesystem::file_size(currentLogFile_, ec);
-        if (ec) return messages;
+        if (ec || (uint64_t)fileSize == lastFileSize_) return messages;
+        const uint64_t size = (uint64_t)fileSize;
 
-        if ((uint64_t)fileSize == lastFileSize_) return messages;
-        bool truncated = (uint64_t)fileSize < lastFileSize_;
-        lastFileSize_ = (uint64_t)fileSize;
-
-        // Read file content
-        std::ifstream file(currentLogFile_);
+        std::ifstream file(currentLogFile_, std::ios::binary);
         if (!file.is_open()) return messages;
 
-        std::vector<std::string> lines;
-        std::string line;
-        while (std::getline(file, line)) {
-            // Strip \r if present
-            if (!line.empty() && line.back() == '\r')
-                line.pop_back();
-            lines.push_back(line);
-        }
-        file.close();
+        uint64_t start = readOffset_;
+        if (size < lastFileSize_ || readAnchor(file, start) != anchor_) start = 0;
 
-        // Fewer lines than last time is the other face of a truncation: the
-        // file was cut and has already regrown past its old size. Either way
-        // every current line is new. Only the last match is displayed, so
-        // rescanning a whole file cannot flood the overlay.
-        if (truncated || (int)lines.size() < lastLineCount_) lastLineCount_ = 0;
+        std::string bytes = readAt(file, start, size - start);
+        size_t lastBreak = bytes.rfind('\n');
+        size_t consumed = lastBreak == std::string::npos ? 0 : lastBreak + 1;
 
-        // Process new lines
-        for (int i = lastLineCount_; i < (int)lines.size(); i++) {
-            std::string msg = rolog::formatEvent(lines[i]);
+        size_t pos = (start == 0 && bytes.compare(0, 3, "\xEF\xBB\xBF") == 0) ? 3 : 0;
+        while (pos < consumed) {
+            size_t eol = bytes.find('\n', pos);
+            std::string line = bytes.substr(pos, eol - pos);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            std::string msg = rolog::formatEvent(line);
             if (!msg.empty())
                 messages.push_back({msg, roplat::monotonicMs()});
+            pos = eol + 1;
         }
 
-        lastLineCount_ = (int)lines.size();
+        readOffset_ = start + consumed;
+        lastFileSize_ = size;
+        anchor_ = readAnchor(file, readOffset_);
         return messages;
     }
 
 private:
+    static constexpr uint64_t kAnchorBytes = 64;
+
     std::string logDir_;
     std::string currentLogFile_;
-    int lastLineCount_;
+    uint64_t readOffset_;
     uint64_t lastFileSize_;
+    std::string anchor_;
+
+    // Reads up to `count` bytes at `offset`; fewer at the end of the file.
+    static std::string readAt(std::ifstream& file, uint64_t offset, uint64_t count) {
+        std::string bytes((size_t)count, '\0');
+        file.clear();
+        file.seekg((std::streamoff)offset);
+        file.read(&bytes[0], (std::streamsize)count);
+        bytes.resize((size_t)file.gcount());
+        return bytes;
+    }
+
+    static std::string readAnchor(std::ifstream& file, uint64_t offset) {
+        uint64_t length = offset < kAnchorBytes ? offset : kAnchorBytes;
+        return readAt(file, offset - length, length);
+    }
 
     void findNewestLog() {
         currentLogFile_ = findNewestLogPath();
@@ -175,22 +193,22 @@ private:
         return newestFile;
     }
 
-    void seedLineCount() {
-        lastLineCount_ = 0;
+    // Starts tailing at the end of the current log, so what it already holds
+    // is not shown. A log that cannot be read is tailed from the top instead.
+    void seedAtEnd() {
+        readOffset_ = 0;
         lastFileSize_ = 0;
+        anchor_.clear();
 
         if (currentLogFile_.empty()) return;
 
-        std::ifstream file(currentLogFile_);
+        std::ifstream file(currentLogFile_, std::ios::binary);
         if (!file.is_open()) return;
-
-        std::string line;
-        while (std::getline(file, line))
-            lastLineCount_++;
-        file.close();
 
         std::error_code ec;
         uintmax_t size = std::filesystem::file_size(currentLogFile_, ec);
-        if (!ec) lastFileSize_ = (uint64_t)size;
+        if (ec) return;
+        readOffset_ = lastFileSize_ = (uint64_t)size;
+        anchor_ = readAnchor(file, readOffset_);
     }
 };

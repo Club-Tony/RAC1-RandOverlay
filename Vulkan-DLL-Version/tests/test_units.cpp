@@ -685,14 +685,52 @@ int main(int argc, char** argv) {
         CHECK(lr3.poll().empty(), "an unchanged log yields nothing");
 
         // Cut and already regrown past its old size before the next poll:
-        // only the line count shows it.
+        // only the bytes before the read offset show it.
         std::string longLine = "[Client at 3:00:00]: Ratchet found their " +
                                std::string(200, 'x') + " (Somewhere)\n";
         writeFile(rot, longLine.c_str());
         auto m3 = lr3.poll();
         CHECK(m3.size() == 1 && m3.back().text.find("Ratchet found their xxx") == 0,
               "a log rewritten larger but with fewer lines is read from the top");
+
+        // The case a line count misses: rewritten larger with MORE lines.
+        std::string many;
+        for (int i = 1; i <= 6; i++)
+            many += "[Client at 4:00:0" + std::to_string(i) + "]: Ratchet found their Bolt " +
+                    std::to_string(i) + " padding padding padding\n";
+        writeFile(rot, many.c_str());
+        auto m4 = lr3.poll();
+        CHECK(m4.size() == 6 && m4.front().text == "Ratchet found their Bolt 1 padding padding padding",
+              "a log rewritten larger with more lines is read from the top");
         removeAll(dir3);
+    }
+
+    // Only complete lines are consumed: one caught mid-write is read whole once
+    // its line break lands, never as a fragment.
+    printf("[log_reader incremental]\n");
+    {
+        std::string dir4 = tempPath("randoverlay_test_logs4");
+        removeAll(dir4);
+        fs::create_directories(dir4);
+        std::string part = (fs::path(dir4) / "Client_partial.txt").string();
+        writeFile(part, "seed\n");
+        LogReader lr4(dir4);
+
+        appendFile(part, "[Client at 1:00:00]: Ratchet found their Gold");
+        CHECK(lr4.poll().empty(), "a line without its line break is held back");
+        appendFile(part, " Bolt (Kerwan)\n");
+        auto m1 = lr4.poll();
+        CHECK(m1.size() == 1 && m1.back().text == "Ratchet found their Gold Bolt",
+              "the completed line is read whole");
+        CHECK(lr4.poll().empty(), "nothing is read twice");
+
+        // Archipelago writes UTF-8 with a byte order mark; reading from the top
+        // must not glue it to the first line's prefix.
+        writeFile(part, "\xEF\xBB\xBF[Client at 2:00:00]: Clank found their \xC3\x96mega\n");
+        auto m2 = lr4.poll();
+        CHECK(m2.size() == 1 && m2.back().text == "Clank found their \xC3\x96mega",
+              "a BOM at the top of a rewritten log is skipped");
+        removeAll(dir4);
     }
 
     // A missing log directory must degrade quietly, not throw. On Linux the

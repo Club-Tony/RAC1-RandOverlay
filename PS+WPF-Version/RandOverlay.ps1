@@ -236,8 +236,7 @@ public class OverlayWinApi {
 Write-Log "Assemblies loaded"
 
 # ── State ──────────────────────────────────────────────────────────────────────
-$script:lastLineCount    = 0
-$script:lastFileSize     = 0
+$script:logCursor        = $null   # set by Reset-LogCursor; see "Log tail"
 $script:currentLogFile   = $null
 $script:overlayEnabled   = $true
 $script:displayTimer     = $null
@@ -294,55 +293,134 @@ function ConvertFrom-ArchipelagoLine([string]$Line) {
     return $text
 }
 
+# ── Log tail ──────────────────────────────────────────────────────────────────
+# The tail contract shared with the AutoHotkey and Vulkan runtimes. A cursor
+# holds the byte offset read up to, the file size at the last poll, and up to
+# 64 bytes just before the offset (the anchor). A poll reads only the bytes
+# after the offset and consumes only complete lines, so a line still being
+# written is read whole on a later poll. A file smaller than at the last poll
+# was truncated in place; one whose anchor bytes changed was rewritten and has
+# already regrown past the offset. Both are read again from the top. Only the
+# latest message is shown, so that cannot flood the overlay.
+
+function New-LogCursor {
+    return @{ Offset = [long]0; Size = [long]0; Anchor = (New-Object byte[] 0); FromTop = $false }
+}
+
+# Opens a log for reading while Archipelago still has it open for writing.
+function Open-LogStream([string]$Path) {
+    $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+    return New-Object System.IO.FileStream -ArgumentList @(
+        $Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+}
+
+# Reads up to $Count bytes at $Offset; fewer at the end of the file.
+function Read-StreamBytes([System.IO.Stream]$Stream, [long]$Offset, [long]$Count) {
+    $buffer = New-Object byte[] $Count
+    $Stream.Position = $Offset
+    $total = 0
+    while ($total -lt $Count) {
+        $read = $Stream.Read($buffer, $total, $Count - $total)
+        if ($read -le 0) { break }
+        $total += $read
+    }
+    if ($total -lt $Count) { [Array]::Resize([ref]$buffer, $total) }
+    return ,$buffer
+}
+
+function Read-LogAnchor([System.IO.Stream]$Stream, [long]$Offset) {
+    $length = [Math]::Min($Offset, 64)
+    return ,(Read-StreamBytes $Stream ($Offset - $length) $length)
+}
+
+# Moves the cursor to the end of the log, so what it already holds is not
+# shown. Throws if the log cannot be read, leaving the cursor unchanged.
+function Set-LogCursorToEnd([string]$Path, [hashtable]$Cursor) {
+    $stream = Open-LogStream $Path
+    try {
+        $size = $stream.Length
+        $anchor = Read-LogAnchor $stream $size
+    } finally {
+        $stream.Dispose()
+    }
+    $Cursor.Offset = $size
+    $Cursor.Size = $size
+    $Cursor.Anchor = $anchor
+}
+
+# Returns the complete lines added to the log since the cursor and moves the
+# cursor past them. Sets $Cursor.FromTop when the log was read from the top.
+function Read-LogTail([string]$Path, [hashtable]$Cursor) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    $Cursor.FromTop = $false
+    $stream = Open-LogStream $Path
+    try {
+        $size = $stream.Length
+        if ($size -eq $Cursor.Size) { return ,$lines }
+
+        $start = $Cursor.Offset
+        if ($size -lt $Cursor.Size -or -not [System.Collections.StructuralComparisons]::StructuralEqualityComparer.Equals(
+                (Read-LogAnchor $stream $start), $Cursor.Anchor)) {
+            $start = 0
+            $Cursor.FromTop = $true
+        }
+
+        $bytes = Read-StreamBytes $stream $start ($size - $start)
+        $consumed = [Array]::LastIndexOf($bytes, [byte]10) + 1
+        if ($consumed -gt 0) {
+            $text = [System.Text.Encoding]::UTF8.GetString($bytes, 0, $consumed)
+            if ($start -eq 0) { $text = $text.TrimStart([char]0xFEFF) }
+            $parts = $text.Split([char]10)
+            # The text ends in a line break, so the last part is always empty.
+            for ($i = 0; $i -lt $parts.Length - 1; $i++) {
+                $lines.Add($parts[$i].TrimEnd([char]13))
+            }
+        }
+
+        $Cursor.Offset = $start + $consumed
+        $Cursor.Size = $size
+        $Cursor.Anchor = Read-LogAnchor $stream $Cursor.Offset
+    } finally {
+        $stream.Dispose()
+    }
+    return ,$lines
+}
+
+# Starts tailing a log from its end; on failure, from the top.
+function Reset-LogCursor([string]$Path) {
+    $script:logCursor = New-LogCursor
+    try {
+        Set-LogCursorToEnd $Path $script:logCursor
+        return $true
+    } catch {
+        Write-Log "Seed failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Read-NewLines {
     $newest = Find-NewestLog
     if ($newest -and $newest -ne $script:currentLogFile) {
         Write-Log "Switched to log: $newest"
         $script:currentLogFile = $newest
         # #8 HIGH: Seed new log instead of resetting to 0 (prevents message flood)
-        try {
-            $script:lastFileSize = (Get-Item -LiteralPath $newest -ErrorAction Stop).Length
-            $seedLines = @(Get-Content -Path $newest -ErrorAction Stop)
-            $script:lastLineCount = $seedLines.Count
-        } catch {
-            $script:lastLineCount = 0
-            $script:lastFileSize = 0
-        }
+        Reset-LogCursor $newest > $null
     }
-    if (-not $script:currentLogFile -or -not (Test-Path $script:currentLogFile)) { return @() }
-
-    # Cheap guard: skip the full read unless the file size changed.
-    try {
-        $size = (Get-Item -LiteralPath $script:currentLogFile -ErrorAction Stop).Length
-    } catch {
-        return @()
-    }
-    if ($size -eq $script:lastFileSize) { return @() }
+    if (-not $script:currentLogFile -or -not (Test-Path -LiteralPath $script:currentLogFile)) { return @() }
 
     try {
-        $lines = @(Get-Content -Path $script:currentLogFile -ErrorAction Stop)
+        $lines = Read-LogTail $script:currentLogFile $script:logCursor
     } catch {
         Write-Host "  [read error] $($_.Exception.Message)"
         return @()
     }
+    if ($script:logCursor.FromTop) { Write-Log "Log was truncated or rewritten; reading it from the top" }
 
-    # A shorter file, or fewer lines than last time, was truncated in place:
-    # read it again from the top. Only the latest message is shown, so this
-    # cannot flood the overlay.
-    if ($size -lt $script:lastFileSize -or $lines.Count -lt $script:lastLineCount) {
-        Write-Log "Log shrank; reading it from the top"
-        $script:lastLineCount = 0
-    }
-    $script:lastFileSize = $size
     $newMessages = @()
-
-    if ($lines.Count -gt $script:lastLineCount) {
-        for ($i = $script:lastLineCount; $i -lt $lines.Count; $i++) {
-            $text = ConvertFrom-ArchipelagoLine $lines[$i]
-            # Every shown event uses the preset's single overlay color.
-            if ($null -ne $text) { $newMessages += @{ Text = $text; Color = $OverlayColor } }
-        }
-        $script:lastLineCount = $lines.Count
+    foreach ($line in $lines) {
+        $text = ConvertFrom-ArchipelagoLine $line
+        # Every shown event uses the preset's single overlay color.
+        if ($null -ne $text) { $newMessages += @{ Text = $text; Color = $OverlayColor } }
     }
     return $newMessages
 }
@@ -462,17 +540,12 @@ if (-not $script:currentLogFile) {
 
 Write-Log "Using log: $($script:currentLogFile)"
 
-# Seed file size and line count (skip existing content)
-try {
-    $script:lastFileSize = (Get-Item -LiteralPath $script:currentLogFile -ErrorAction Stop).Length
-    $seedLines = @(Get-Content -Path $script:currentLogFile -ErrorAction Stop)
-    $script:lastLineCount = $seedLines.Count
-    Write-Host "Seeded at $($script:lastLineCount) lines"
-    Write-Log "Seeded at line $($script:lastLineCount)"
-} catch {
-    Write-Host "Seed failed: $($_.Exception.Message)"
-    $script:lastLineCount = 0
-    $script:lastFileSize = 0
+# Seed the log cursor at the end of the file (skip existing content)
+if (Reset-LogCursor $script:currentLogFile) {
+    Write-Host "Seeded at byte $($script:logCursor.Offset)"
+    Write-Log "Seeded at byte $($script:logCursor.Offset)"
+} else {
+    Write-Host "Seed failed; reading the log from the top"
 }
 
 # ── Build WPF window ──────────────────────────────────────────────────────────

@@ -3,6 +3,7 @@
 #SingleInstance, Force
 #Include %A_ScriptDir%\Lib\ScriptSingleton.ahk
 #Include %A_ScriptDir%\Lib\RandOverlayParse.ahk
+#Include %A_ScriptDir%\Lib\RandOverlayTail.ahk
 EnsureScriptSingleton()
 #Warn
 SendMode Input
@@ -38,8 +39,7 @@ ArchLoadConfig()
 ArchApplySelfTestOverrides()
 
 ; ── State ──────────────────────────────────────────────────────────────────────
-archLastFileSize    := 0
-archLastLineCount   := 0
+archLogCursor       := ""   ; see Lib\RandOverlayTail.ahk
 archCurrentLogFile  := ""
 archOverlayEnabled  := true
 archGuiHwnd         := 0
@@ -83,19 +83,8 @@ if (archCurrentLogFile = "") {
     ExitApp
 }
 
-; Seed file size and line count (skip existing content)
-FileGetSize, archLastFileSize, %archCurrentLogFile%
-FileRead, seedContent, %archCurrentLogFile%
-if (ErrorLevel) {
-    archLastLineCount := 0
-} else {
-    seedLines := StrSplit(seedContent, "`n", "`r")
-    while (seedLines.Length() > 0 && seedLines[seedLines.Length()] = "")
-        seedLines.RemoveAt(seedLines.Length())
-    archLastLineCount := seedLines.Length()
-}
-seedContent := ""
-seedLines := ""
+; Seed the log cursor at the end of the file (skip existing content)
+archLogCursor := ArchTailCursorAtEnd(archCurrentLogFile)
 
 ; ── Build GUI ──────────────────────────────────────────────────────────────────
 OnMessage(0x0138, "ArchCTLColorStatic")
@@ -225,68 +214,27 @@ ArchPollLog:
     if (archPollNewest != "" && archPollNewest != archCurrentLogFile) {
         ; #8 HIGH: Seed new log file instead of resetting to 0 (prevents message flood)
         archCurrentLogFile := archPollNewest
-        FileGetSize, archLastFileSize, %archCurrentLogFile%
-        FileRead, archPollSwitchContent, %archCurrentLogFile%
-        if (!ErrorLevel) {
-            archPollSwitchLines := StrSplit(archPollSwitchContent, "`n", "`r")
-            while (archPollSwitchLines.Length() > 0 && archPollSwitchLines[archPollSwitchLines.Length()] = "")
-                archPollSwitchLines.RemoveAt(archPollSwitchLines.Length())
-            archLastLineCount := archPollSwitchLines.Length()
-        } else {
-            archLastLineCount := 0
-        }
-        archPollSwitchContent := ""
-        archPollSwitchLines := ""
+        archLogCursor := ArchTailCursorAtEnd(archCurrentLogFile)
     }
     if (archCurrentLogFile = "")
         return
     if (!FileExist(archCurrentLogFile))
         return
 
-    ; Check file size first — skip read if unchanged
-    FileGetSize, archPollCurrentSize, %archCurrentLogFile%
-    if (ErrorLevel || archPollCurrentSize = archLastFileSize)
-        return
-
-    ; File changed — read its content
-    archPollFile := FileOpen(archCurrentLogFile, "r")
-    if (!archPollFile)
-        return
-    archPollRawContent := archPollFile.Read()
-    archPollFile.Close()
-
-    ; A shorter file was truncated in place: read it again from the top. Only
-    ; the last match below is shown, so this cannot flood the overlay.
-    if (archPollCurrentSize < archLastFileSize)
-        archLastLineCount := 0
-    archLastFileSize := archPollCurrentSize
-
-    archPollAllLines := StrSplit(archPollRawContent, "`n", "`r")
-    ; Strip trailing empty elements from split
-    while (archPollAllLines.Length() > 0 && archPollAllLines[archPollAllLines.Length()] = "")
-        archPollAllLines.RemoveAt(archPollAllLines.Length())
-    archPollLineCount := archPollAllLines.Length()
-    ; Fewer lines than last time also means the file was truncated and regrew.
-    if (archPollLineCount < archLastLineCount)
-        archLastLineCount := 0
-    if (archPollLineCount <= archLastLineCount)
-        return
-
+    ; Reads only what was appended since the last poll; a truncated or
+    ; rewritten log is read from the top. Only the last match below is shown,
+    ; so that cannot flood the overlay.
+    archPollLines := ArchTailRead(archCurrentLogFile, archLogCursor)
     archPollLatestMsg := ""
     archPollLatestColor := 0
 
-    Loop % archPollLineCount - archLastLineCount
-    {
-        archPollIndex := archLastLineCount + A_Index
-        archPollLine := archPollAllLines[archPollIndex]
+    for archPollIndex, archPollLine in archPollLines {
         archPollParsed := ArchParseLine(archPollLine)
         if (archPollParsed.text != "") {
             archPollLatestMsg := archPollParsed.text
             archPollLatestColor := archPollParsed.color
         }
     }
-
-    archLastLineCount := archPollLineCount
 
     if (archPollLatestMsg != "")
         ArchShowMessage(archPollLatestMsg, archPollLatestColor)

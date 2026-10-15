@@ -393,6 +393,90 @@ Invoke-Check "PowerShell integer settings" {
     if ($problems.Count) { throw ($problems -join "`n") }
 }
 
+Invoke-Check "PowerShell log tail" {
+    . ([scriptblock]::Create((Get-ScriptFunctionSource $OverlayScript @(
+        "New-LogCursor", "Open-LogStream", "Read-StreamBytes", "Read-LogAnchor",
+        "Set-LogCursorToEnd", "Read-LogTail"))))
+
+    $dir = Join-Path $env:TEMP ("RandOverlayTail-{0}" -f [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $dir -Force > $null
+    $log = Join-Path $dir "Client_tail.txt"
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $problems = New-Object System.Collections.Generic.List[string]
+    $cursor = New-LogCursor
+    # Polls once and records a problem unless exactly $Expected came back.
+    # Ordinal: -ceq compares by culture, which ignores a stray U+FEFF.
+    $expect = {
+        param([string]$Case, [string[]]$Expected, [bool]$FromTop = $false)
+        $actual = [string[]](Read-LogTail $log $cursor)
+        $same = $actual.Count -eq $Expected.Count -and $cursor.FromTop -eq $FromTop
+        for ($i = 0; $same -and $i -lt $Expected.Count; $i++) {
+            $same = [string]::Equals($actual[$i], $Expected[$i], [StringComparison]::Ordinal)
+        }
+        if (-not $same) {
+            $problems.Add("${Case}: got [$($actual -join '|')] fromTop=$($cursor.FromTop)")
+        }
+    }
+
+    try {
+        [System.IO.File]::WriteAllText($log, "seed one`r`nseed two`r`n", $utf8)
+        Set-LogCursorToEnd $log $cursor
+        if ($cursor.Offset -ne (Get-Item -LiteralPath $log).Length) { $problems.Add("seed: cursor not at the end") }
+        & $expect "unchanged after seeding" @()
+
+        $first = "[Client at 1:00:00]: Ratchet found their Gold Bolt (Kerwan)"
+        [System.IO.File]::AppendAllText($log, "$first`r`n", $utf8)
+        & $expect "appended line, CRLF stripped" @($first)
+
+        [System.IO.File]::AppendAllText($log, "[Client at 1:00:01]: Clank found", $utf8)
+        & $expect "a partial line is held back" @()
+        [System.IO.File]::AppendAllText($log, " their Swingshot`n", $utf8)
+        & $expect "the completed line is read whole" @("[Client at 1:00:01]: Clank found their Swingshot")
+        & $expect "unchanged log" @()
+
+        [System.IO.File]::WriteAllText($log, "[Client at 2:00:00]: short`n", $utf8)
+        & $expect "truncated to fewer bytes" @("[Client at 2:00:00]: short") $true
+        [System.IO.File]::AppendAllText($log, "[Client at 2:00:01]: next`n", $utf8)
+        & $expect "tailing resumes after a truncation" @("[Client at 2:00:01]: next")
+
+        $long = "[Client at 3:00:00]: Ratchet found their " + ("x" * 200) + " (Somewhere)"
+        [System.IO.File]::WriteAllText($log, "$long`n", $utf8)
+        & $expect "rewritten larger with fewer lines" @($long) $true
+
+        # The case a line count misses: rewritten larger with MORE lines.
+        $many = @(1..6 | ForEach-Object { "[Client at 4:00:0$_]: line $_ of a rewritten log padding padding" })
+        [System.IO.File]::WriteAllText($log, (($many -join "`n") + "`n"), $utf8)
+        & $expect "rewritten larger with more lines" $many $true
+
+        # Archipelago writes UTF-8 with a byte order mark.
+        $bolt = "[Client at 5:00:00]: Ratchet found their " + [char]0x00D6 + "mega Bolt"
+        [System.IO.File]::WriteAllText($log, "$bolt`n", (New-Object System.Text.UTF8Encoding($true)))
+        & $expect "UTF-8 decoded and the BOM dropped" @($bolt) $true
+
+        # Archipelago keeps its log open for writing while the overlay reads it.
+        $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+        $writer = New-Object System.IO.FileStream -ArgumentList @(
+            $log, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, $share)
+        try {
+            $bytes = $utf8.GetBytes("[Client at 5:00:01]: while open`n")
+            $writer.Write($bytes, 0, $bytes.Length)
+            $writer.Flush()
+            & $expect "read while the writer holds the file" @("[Client at 5:00:01]: while open")
+        } finally {
+            $writer.Dispose()
+        }
+
+        [System.IO.File]::WriteAllText($log, "", $utf8)
+        $cursor = New-LogCursor
+        Set-LogCursorToEnd $log $cursor
+        [System.IO.File]::AppendAllText($log, "first line`n", $utf8)
+        & $expect "a log seeded empty is read from its start" @("first line")
+    } finally {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($problems.Count) { throw ($problems -join "`n") }
+}
+
 Invoke-Check "PowerShell DIP conversion" {
     Add-Type -AssemblyName WindowsBase
     . ([scriptblock]::Create((Get-ScriptFunctionSource $OverlayScript @("ConvertTo-DipBounds"))))
@@ -440,7 +524,9 @@ Invoke-Check "AHK /iLib parse" {
         foreach ($relativePath in @(
             "RandOverlay.ahk",
             "Lib\RandOverlayParse.ahk",
-            "tests\ahk\ParseFixture.ahk"
+            "Lib\RandOverlayTail.ahk",
+            "tests\ahk\ParseFixture.ahk",
+            "tests\ahk\TailCheck.ahk"
         )) {
             $result = Invoke-NativeCommand -FilePath $Ahk -ArgumentList @(
                 "/ErrorStdOut",
@@ -482,6 +568,32 @@ Invoke-Check "AHK Archipelago fixture" {
     }
     if ([int]$Matches[1] -ne $expectedRows) {
         throw "ParseFixture.ahk checked $($Matches[1]) rows; the fixture has $expectedRows"
+    }
+}
+
+# The same tail cases as "PowerShell log tail", through Lib\RandOverlayTail.ahk.
+Invoke-Check "AHK log tail" {
+    if (-not $Ahk) { throw "AutoHotkey was not resolved." }
+
+    $dir = Join-Path $env:TEMP ("RandOverlayAhkTail-{0}" -f [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $dir -Force > $null
+    try {
+        $result = Invoke-NativeCommand -FilePath $Ahk -ArgumentList @(
+            "/force",
+            "/ErrorStdOut",
+            (Join-Path $Root "tests\ahk\TailCheck.ahk"),
+            $dir
+        ) -TimeoutSeconds 20
+    } finally {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $combined = (($result.Stdout + $result.Stderr) -split "\r?\n" | Where-Object { $_ -and $_ -notmatch '^ok ' }) -join "`n"
+    if ($result.ExitCode -ne 0) { throw "TailCheck.ahk exited $($result.ExitCode)`n$combined" }
+    if ($combined -match "(?i)\b(error|warning)\b") { throw $combined }
+    # An executable that runs nothing also exits 0 with no output.
+    if ($result.Stdout -notmatch "(?m)^cases=([1-9]\d*) failures=0\r?$") {
+        throw "TailCheck.ahk printed no passing summary: $combined"
     }
 }
 
