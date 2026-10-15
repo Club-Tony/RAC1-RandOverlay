@@ -452,6 +452,7 @@ static void ApplyFontSettings() {
         LoadOverlayFonts();
         if (oldDigit && oldDigit != oldPrimary) atlas->RemoveFont(oldDigit);
         if (oldPrimary) atlas->RemoveFont(oldPrimary);
+        LayerLog("Font set replaced; the atlas holds %d fonts", atlas->Fonts.Size);
     } else if (g_layout.fontPx != previousPx) {
         LayerLog("Font size now %.0fpx", g_layout.fontPx);
     }

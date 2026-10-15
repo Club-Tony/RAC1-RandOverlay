@@ -743,7 +743,9 @@ $AmbiguousRac2Rac3Title = "Ratchet & Clank: Going Commando / Up Your Arsenal | P
 $FontSwitchTitle = "Ratchet & Clank: Up Your Arsenal | PCSX2"
 $FontSwitchEvent = "Clank found their Bolt"
 $FontFaceSwitchIni = @{ "Preset.RAC3/VulkanFontSize" = "80"; "Preset.RAC3/FontFamily" = "Consolas" }
-$FontFaceSwitchLog = @('font=36px', 'Automatic preset: RAC2 -> RAC3', '(?i)Font loaded: \S*consola\S* \(60px\)')
+# Consolas plus the Bahnschrift digit font: two fonts once the old ones are removed.
+$FontFaceSwitchLog = @('font=36px', 'Automatic preset: RAC2 -> RAC3', '(?i)Font loaded: \S*consola\S* \(60px\)',
+                       'Font set replaced; the atlas holds 2 fonts')
 $FontSizeSwitchIni = @{ "Preset.RAC3/VulkanFontSize" = "80" }
 $FontSizeSwitchLog = @('font=36px', 'Automatic preset: RAC2 -> RAC3', 'Font size now 60px')
 
