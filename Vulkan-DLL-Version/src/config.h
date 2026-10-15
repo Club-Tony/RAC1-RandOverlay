@@ -53,8 +53,9 @@ struct RandOverlayConfig {
     int   fadeInMs            = 300;                      // fade-in duration (parity: FadeInMs)
     int   fadeOutMs           = 500;                      // fade-out duration (parity: FadeOutMs)
     std::string iniPathUsed;                              // for diagnostics
-    // First problem found by the last load(), worded exactly as the AHK and
-    // PS+WPF runtimes word it; empty when the ini was clean. The caller logs it.
+    // First problem found by the last load(), worded exactly as the PS+WPF
+    // runtime words it (AHK matches except for colours, which it reports as
+    // "Invalid color value"); empty when the ini was clean. The caller logs it.
     std::string warning;
     bool  loaded              = false;
 
@@ -86,6 +87,15 @@ inline bool parseHexColor(const std::string& in, float out[3]) {
     out[1] = (v[2] * 16 + v[3]) / 255.0f;
     out[2] = (v[4] * 16 + v[5]) / 255.0f;
     return true;
+}
+
+// The warning for an ini that could not be used, worded as AHK and PS+WPF word
+// it. They always fall back to RAC1; the layer falls back to the preset it is
+// loading, so that preset is named. Empty when the ini was opened.
+inline std::string iniProblem(const std::string& iniPath, bool opened, const std::string& preset) {
+    if (opened) return "";
+    return (iniPath.empty() ? "RandOverlay.ini not found" : "Could not read RandOverlay.ini")
+           + std::string("; using built-in ") + preset + " defaults.";
 }
 
 // Whole-string numeric parsers matching the other two runtimes' patterns:
@@ -220,6 +230,7 @@ inline void RandOverlayConfig::load(const std::string& presetOverride) {
     if (get("General", "EnabledPresets", tmp) && !tmp.empty()) enabledPresets = tmp;
     else enabledPresets = activePreset; // compatibility with pre-auto-detection INIs
     if (!presetOverride.empty()) activePreset = presetOverride;
+    warn(iniProblem(ini, loaded, activePreset));
     // Paths are the one setting a shared ini genuinely cannot share. Adopting
     // the Windows LogDir on Linux would leave the overlay tailing a path that
     // cannot exist, so it would start cleanly and then silently never fire.
@@ -262,8 +273,15 @@ inline void RandOverlayConfig::load(const std::string& presetOverride) {
 
     if (get(psec, "EmulatorProcesses", tmp) && !tmp.empty())  emulatorProcs = tmp;
     if (get(psec, "ClientComponent", tmp) && !tmp.empty())    clientComponent = tmp;
-    if (get(psec, "OverlayColor", tmp))                       parseHexColor(tmp, overlayColor);
-    if (get(psec, "BackgroundColor", tmp))                    parseHexColor(tmp, bgColor);
+    // An unparseable colour keeps the default and is reported; an empty one is
+    // the same as an absent key, as in PS+WPF.
+    auto readColor = [&](const char* key, float field[3]) {
+        std::string raw;
+        if (!get(psec, key, raw) || raw.empty()) return;
+        if (!parseHexColor(raw, field)) warn("Invalid " + psec + "." + key + "; using default.");
+    };
+    readColor("OverlayColor", overlayColor);
+    readColor("BackgroundColor", bgColor);
     // VerticalPercent is a fraction of the frame height; outside 0..1 the
     // panel would land off-frame.
     if (get(psec, "VerticalPercent", tmp) && !tmp.empty()) {
