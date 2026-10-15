@@ -2,6 +2,7 @@
 #NoEnv
 #SingleInstance, Force
 #Include %A_ScriptDir%\Lib\ScriptSingleton.ahk
+#Include %A_ScriptDir%\Lib\RandOverlayParse.ahk
 EnsureScriptSingleton()
 #Warn
 SendMode Input
@@ -244,22 +245,30 @@ ArchPollLog:
 
     ; Check file size first — skip read if unchanged
     FileGetSize, archPollCurrentSize, %archCurrentLogFile%
-    if (archPollCurrentSize <= archLastFileSize)
+    if (ErrorLevel || archPollCurrentSize = archLastFileSize)
         return
-    archLastFileSize := archPollCurrentSize
 
-    ; File grew — read new content
+    ; File changed — read its content
     archPollFile := FileOpen(archCurrentLogFile, "r")
     if (!archPollFile)
         return
     archPollRawContent := archPollFile.Read()
     archPollFile.Close()
 
+    ; A shorter file was truncated in place: read it again from the top. Only
+    ; the last match below is shown, so this cannot flood the overlay.
+    if (archPollCurrentSize < archLastFileSize)
+        archLastLineCount := 0
+    archLastFileSize := archPollCurrentSize
+
     archPollAllLines := StrSplit(archPollRawContent, "`n", "`r")
     ; Strip trailing empty elements from split
     while (archPollAllLines.Length() > 0 && archPollAllLines[archPollAllLines.Length()] = "")
         archPollAllLines.RemoveAt(archPollAllLines.Length())
     archPollLineCount := archPollAllLines.Length()
+    ; Fewer lines than last time also means the file was truncated and regrew.
+    if (archPollLineCount < archLastLineCount)
+        archLastLineCount := 0
     if (archPollLineCount <= archLastLineCount)
         return
 
@@ -358,7 +367,7 @@ ArchLoadConfig() {
     archEmulatorProcesses := ArchCsvToArray(ArchIniRead(presetSection, "EmulatorProcesses", defaultEmulators), ArchCsvToArray(defaultEmulators, []))
     archOverlayColorRgb := ArchNormalizeRgbHex(ArchIniRead(presetSection, "OverlayColor", archOverlayColorRgb), archOverlayColorRgb)
     archBgColor := ArchNormalizeRgbHex(ArchIniRead(presetSection, "BackgroundColor", archBgColor), archBgColor)
-    archVerticalPct := ArchIniReadFloat(presetSection, "VerticalPercent", archVerticalPct)
+    archVerticalPct := ArchIniReadFloat(presetSection, "VerticalPercent", archVerticalPct, 0, 1)
     archFontFamily := ArchIniRead(presetSection, "FontFamily", archFontFamily)
     archFontFallback := ArchIniRead(presetSection, "FontFallback", archFontFallback)
     archFontSize := ArchIniReadInt(presetSection, "AhkFontSize", archFontSize, 1)
@@ -388,10 +397,13 @@ ArchIniReadInt(section, key, defaultValue, minValue := "") {
     return defaultValue
 }
 
-ArchIniReadFloat(section, key, defaultValue) {
+ArchIniReadFloat(section, key, defaultValue, minValue := "", maxValue := "") {
     value := ArchIniRead(section, key, defaultValue)
-    if (RegExMatch(value, "^-?\d+(\.\d+)?$"))
-        return value + 0.0
+    if (RegExMatch(value, "^-?\d+(\.\d+)?$")) {
+        value += 0.0
+        if ((minValue = "" || value >= minValue) && (maxValue = "" || value <= maxValue))
+            return value
+    }
     ArchSetConfigWarning("Invalid " . section . "." . key . "; using default.")
     return defaultValue
 }
@@ -462,31 +474,12 @@ ArchRgbHexToBgr(hexValue, defaultValue) {
 ArchParseLine(line) {
     global archOverlayColorBgr
 
-    result := {text: "", color: 0}
+    result := {text: ArchFormatEvent(line), color: 0}
 
-    if (!RegExMatch(line, "^\[(FileLog|Client) at [^\]]+\]:\s*(.*)", m))
-        return result
-
-    parsedMsg := m2
-
-    ; Config colors are RGB hex; Win32 text colors use BGR COLORREF.
-    if (InStr(parsedMsg, "test"))
-        colorRef := archOverlayColorBgr
-    else if (InStr(parsedMsg, "found their"))
-        colorRef := archOverlayColorBgr
-    else if (InStr(parsedMsg, "completed their goal"))
-        colorRef := archOverlayColorBgr
-    else if (InStr(parsedMsg, "Congratulations"))
-        colorRef := archOverlayColorBgr
-    else if (InStr(parsedMsg, "released all remaining"))
-        colorRef := archOverlayColorBgr
-    else
-        return result
-
-    ; Strip parenthesized location info
-    parsedMsg := Trim(RegExReplace(parsedMsg, "\s*\(.*\)\s*$", ""))
-    result.text := parsedMsg
-    result.color := colorRef
+    ; Every shown event uses the preset's single overlay color. Config colors
+    ; are RGB hex; Win32 text colors use BGR COLORREF.
+    if (result.text != "")
+        result.color := archOverlayColorBgr
     return result
 }
 
