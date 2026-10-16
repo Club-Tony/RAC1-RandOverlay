@@ -716,12 +716,20 @@ int main(int argc, char** argv) {
         writeFile(part, "seed\n");
         LogReader lr4(dir4);
 
+        // An event already shown sits before the partial line, so a poll that
+        // wrongly restarts at the top re-emits it instead of passing unnoticed.
+        appendFile(part, "[Client at 0:59:59]: Clank found their Swingshot (Kerwan)\n");
+        auto m0 = lr4.poll();
+        CHECK(m0.size() == 1 && m0.back().text == "Clank found their Swingshot",
+              "an appended event is read");
         appendFile(part, "[Client at 1:00:00]: Ratchet found their Gold");
         CHECK(lr4.poll().empty(), "a line without its line break is held back");
         appendFile(part, " Bolt (Kerwan)\n");
         auto m1 = lr4.poll();
         CHECK(m1.size() == 1 && m1.back().text == "Ratchet found their Gold Bolt",
-              "the completed line is read whole");
+              "the completed line is read whole, and nothing before it");
+        // A non-event line gets past the size guard, so this poll really reads.
+        appendFile(part, "[Client at 1:00:01]: routine chatter\n");
         CHECK(lr4.poll().empty(), "nothing is read twice");
 
         // Archipelago writes UTF-8 with a byte order mark; reading from the top
