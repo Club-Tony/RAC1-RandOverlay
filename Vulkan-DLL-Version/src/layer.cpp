@@ -37,6 +37,7 @@
 #include <vector>
 #include <algorithm>
 #include <cstdint>
+#include <mutex>
 
 #include "imgui.h"
 #include "backends/imgui_impl_vulkan.h"
@@ -49,10 +50,31 @@
 #include "arch_client_check.h"
 #include "overlay_layout.h"
 
+// ── Locking ───────────────────────────────────────────────────────────────────
+// g_renderMutex guards all of the layer's own state below: config, log reader,
+// message and preset state, the Vulkan handles the overlay renders with, and
+// the swapchain render resources. Only hook entry points take it; every helper
+// they call assumes it is held. It is deliberately not g_dispatchMutex, which
+// the render paths re-enter on every dispatch lookup — including ImGui's
+// vkAllocateCommandBuffers callback through AllocateLayerCommandBuffers.
+// Lock order: g_renderMutex, then g_dispatchMutex, then g_logMutex (a leaf).
+//
+// Residual risk: the decorated present holds g_renderMutex through the
+// downstream vkQueuePresentKHR, so the overlay's semaphores outlive it. A
+// driver whose present blocked on the window thread, while that thread waited
+// in one of our swapchain/device hooks, would deadlock the two. RPCS3 and
+// PCSX2 create, recreate and present their swapchains on the same render
+// thread, so it does not arise there.
+static std::mutex g_renderMutex;
+
 // ── Debug logging ─────────────────────────────────────────────────────────────
+// Its own leaf lock: LayerLog runs with the other locks held and never takes
+// one itself.
+static std::mutex g_logMutex;
 static FILE* g_log = nullptr;
 
 static void LayerLog(const char* fmt, ...) {
+    std::lock_guard<std::mutex> lock(g_logMutex);
     if (!g_log) {
         std::string dir = roplat::moduleDir();
         if (dir.empty()) return;
@@ -68,6 +90,11 @@ static void LayerLog(const char* fmt, ...) {
     va_end(args);
 }
 
+static void CloseLayerLog() {
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    if (g_log) { fclose(g_log); g_log = nullptr; }
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 static RandOverlayConfig g_config;
 static bool g_disabled = false;
@@ -79,7 +106,17 @@ static uint64_t g_lastPollTick = 0;      // parity: poll the log at PollMs, not 
 static bool g_readyMessageShown = false;  // parity: one-time startup notification
 static bool g_presetResolved = false;
 static bool g_idleExplained = false;      // idle-title note, once per instance's log
+static std::string g_loggedConfigWarning; // config warning already in this log
 static rolayout::Metrics g_layout = rolayout::metricsForHeight(1080.0f, 48.0f);
+static void ApplyFontSettings(); // after a preset-switch reload: follow its fonts
+
+// The config loader words its first problem the way AHK and PS+WPF do. Log it
+// once per log file, after each load.
+static void LogConfigWarning() {
+    if (g_config.warning.empty() || g_config.warning == g_loggedConfigWarning) return;
+    g_loggedConfigWarning = g_config.warning;
+    LayerLog("Config warning: %s", g_config.warning.c_str());
+}
 
 struct RuntimePresetSignals {
     std::vector<std::string> emulatorTitles;
@@ -159,11 +196,13 @@ static bool RefreshRuntimePreset() {
     // With no title signals, a PCSX2 host running with both RAC2 and RAC3
     // enabled is unresolvable, and detectPreset correctly refuses to guess.
     // Rather than pausing forever with no explanation, honour the ini's
-    // ActivePreset as the user's explicit answer.
+    // ActivePreset as the user's explicit answer. The loader already
+    // normalises its case; compare case-blind here regardless.
+    const std::string explicitPreset = roplat::toLower(g_config.activePreset);
     if (detected.empty() &&
         rogate::needsWindowTitleSignals(processExe, g_config.enabledPresets) &&
-        (g_config.activePreset == "RAC2" || g_config.activePreset == "RAC3")) {
-        detected = g_config.activePreset;
+        (explicitPreset == "rac2" || explicitPreset == "rac3")) {
+        detected = explicitPreset == "rac2" ? "RAC2" : "RAC3";
         static bool explained = false;
         if (!explained) {
             explained = true;
@@ -196,6 +235,8 @@ static bool RefreshRuntimePreset() {
         std::string previous = g_config.activePreset;
         g_config.load(detected);
         LayerLog("Automatic preset: %s -> %s", previous.c_str(), detected.c_str());
+        LogConfigWarning();
+        ApplyFontSettings();
     }
     g_presetResolved = true;
     return true;
@@ -229,6 +270,23 @@ static uint32_t          g_apiVersion     = VK_API_VERSION_1_0;
 static uint32_t          g_queueFamily    = 0;
 static VkQueue           g_graphicsQueue  = VK_NULL_HANDLE;
 
+// Every instance created through the layer and not yet destroyed. Emulators
+// open short-lived instances just to list adapters, sometimes while the game's
+// own instance is live; destroying one of those must not take the log reader
+// or the overlay's instance with it.
+struct LiveInstance {
+    VkInstance                handle;
+    PFN_vkGetInstanceProcAddr gipa;
+    uint32_t                  apiVersion;
+};
+static std::vector<LiveInstance> g_liveInstances;
+
+static void AdoptInstance(const LiveInstance& li) {
+    g_instance   = li.handle;
+    g_nextGIPA   = li.gipa;
+    g_apiVersion = li.apiVersion;
+}
+
 // Swapchain / render resources
 static VkSwapchainKHR g_swapchain  = VK_NULL_HANDLE;
 static VkFormat       g_swapFormat = VK_FORMAT_B8G8R8A8_UNORM;
@@ -246,6 +304,7 @@ static bool g_imguiReady  = false;
 static uint64_t g_lastPresentTick = 0;
 static ImFont* g_primaryFont = nullptr;
 static ImFont* g_digitFont = nullptr;
+static std::string g_fontSourceKey; // fontSourceKey() of the fonts in the atlas
 
 static void ShowReadyIfPossible() {
     if (!g_renderReady || !g_presetResolved || g_readyMessageShown) return;
@@ -299,7 +358,9 @@ static VkResult VKAPI_CALL AllocateLayerCommandBuffers(
     const VkCommandBufferAllocateInfo* pAllocateInfo,
     VkCommandBuffer* pCommandBuffers)
 {
-    auto& d = GetDeviceDispatch(device);
+    DeviceDispatch d;
+    if (!TryGetDeviceDispatch(device, d) || !d.AllocateCommandBuffers)
+        return VK_ERROR_INITIALIZATION_FAILED;
     VkResult result = d.AllocateCommandBuffers(device, pAllocateInfo, pCommandBuffers);
     if (result != VK_SUCCESS) return result;
     if (!g_setDeviceLoaderData) return VK_ERROR_INITIALIZATION_FAILED;
@@ -321,23 +382,23 @@ static void ShutdownImgui() {
     g_imguiReady = false;
 }
 
-// ── ImGui init (bound to our overlay render pass) ─────────────────────────────
-static bool InitImgui() {
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = nullptr;   // don't read/write imgui.ini
-    io.LogFilename = nullptr;
-    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-
-    // Font parity with the AHK/PS runtimes: the configured FontFamily
-    // (HandelGothic BT — the R&C-style font), then FontFallback (Bahnschrift),
-    // then ImGui's built-in font as a last resort.
-    // VulkanFontSize is the 1080p baseline. Rebuilding ImGui with each
-    // swapchain automatically tracks windowed/fullscreen resolution changes.
+// ── Overlay fonts and layout ──────────────────────────────────────────────────
+// VulkanFontSize is the 1080p baseline, scaled to the swapchain height, so the
+// layout follows windowed/fullscreen resolution changes with each swapchain.
+static void ApplyLayout() {
     const float baseFontPx = (float)(g_config.fontSize > 0 ? g_config.fontSize : 48);
     g_layout = rolayout::metricsForHeight((float)g_swapExtent.height, baseFontPx);
+}
+
+// Font parity with the AHK/PS runtimes: the configured FontFamily
+// (HandelGothic BT — the R&C-style font), then FontFallback (Bahnschrift),
+// then ImGui's built-in font as a last resort. Adds to the current context's
+// atlas and points g_primaryFont/g_digitFont at the new fonts.
+static void LoadOverlayFonts() {
+    ImGuiIO& io = ImGui::GetIO();
     const float fontPx = g_layout.fontPx;
+    g_primaryFont = nullptr;
+    g_digitFont = nullptr;
     ImFont* font = nullptr;
     // An explicit FontFile wins over family-name resolution — the escape hatch
     // for platforms with no font registry to search.
@@ -370,6 +431,45 @@ static bool InitImgui() {
         g_primaryFont = io.Fonts->AddFontDefault(&fc);
         LayerLog("Using ImGui default font (%.0fpx)", fontPx);
     }
+    g_fontSourceKey = fontSourceKey(g_config);
+}
+
+// A reload (a preset switch, or another instance re-reading the ini) can change
+// the font size, face or file while ImGui is live. ImGui 1.92 rasterises glyphs
+// at whatever size each draw asks for, and every draw passes g_layout.fontPx,
+// so a new size only needs the layout recomputed. A new face is added to the
+// atlas before the old one is removed, so the atlas never runs out of fonts.
+// Callers hold g_renderMutex and run between frames, while the atlas is
+// unlocked; the backend uploads the atlas changes with the next frame.
+static void ApplyFontSettings() {
+    if (!g_imguiReady) return; // InitImgui reads g_config when it next runs
+    const float previousPx = g_layout.fontPx;
+    ApplyLayout();
+    if (fontSourceKey(g_config) != g_fontSourceKey) {
+        ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+        ImFont* oldPrimary = g_primaryFont;
+        ImFont* oldDigit = g_digitFont;
+        LoadOverlayFonts();
+        if (oldDigit && oldDigit != oldPrimary) atlas->RemoveFont(oldDigit);
+        if (oldPrimary) atlas->RemoveFont(oldPrimary);
+        LayerLog("Font set replaced; the atlas holds %d fonts", atlas->Fonts.Size);
+    } else if (g_layout.fontPx != previousPx) {
+        LayerLog("Font size now %.0fpx", g_layout.fontPx);
+    }
+}
+
+// ── ImGui init (bound to our overlay render pass) ─────────────────────────────
+static bool InitImgui() {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;   // don't read/write imgui.ini
+    io.LogFilename = nullptr;
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+
+    ApplyLayout();
+    LoadOverlayFonts();
+    const float fontPx = g_layout.fontPx;
 
     ImGui::StyleColorsDark();
 
@@ -407,7 +507,31 @@ static bool InitImgui() {
 
 // ── Cleanup render resources ──────────────────────────────────────────────────
 static void CleanupRender(VkDevice device) {
-    auto& d = GetDeviceDispatch(device);
+    DeviceDispatch d;
+    if (!TryGetDeviceDispatch(device, d)) {
+        // No table means no way to reach the device, so destroying anything is
+        // impossible. Forget the handles rather than keep stale ones; ImGui's
+        // context is abandoned, not shut down, since its backend would call
+        // into that same device.
+        LayerLog("CleanupRender: no dispatch table for device 0x%p; dropping overlay state",
+                 (void*)device);
+        if (g_imguiReady) {
+            ImGui::SetCurrentContext(nullptr);
+            g_primaryFont = nullptr;
+            g_digitFont = nullptr;
+            g_imguiReady = false;
+        }
+        g_cmdBuffers.clear();
+        g_cmdRecorded.clear();
+        g_overlaySems.clear();
+        g_framebuffers.clear();
+        g_swapViews.clear();
+        g_renderPass = VK_NULL_HANDLE;
+        g_cmdPool = VK_NULL_HANDLE;
+        g_swapImages.clear();
+        g_renderReady = false;
+        return;
+    }
     if (d.DeviceWaitIdle) d.DeviceWaitIdle(device);
 
     ShutdownImgui();
@@ -431,7 +555,11 @@ static void CleanupRender(VkDevice device) {
 
 // ── Setup render resources for the current swapchain ──────────────────────────
 static bool SetupRender(VkDevice device) {
-    auto& d = GetDeviceDispatch(device);
+    DeviceDispatch d;
+    if (!TryGetDeviceDispatch(device, d)) {
+        LayerLog("SetupRender: no dispatch table for device 0x%p", (void*)device);
+        return false;
+    }
 
     uint32_t count = 0;
     if (d.GetSwapchainImagesKHR(device, g_swapchain, &count, nullptr) != VK_SUCCESS || count == 0) {
@@ -668,13 +796,23 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_CreateInstance(
     if (result != VK_SUCCESS) return result;
 
     InitInstanceDispatch(*pInstance, gipa);
-    g_nextGIPA = gipa;
-    g_instance = *pInstance;
+
+    std::lock_guard<std::mutex> lock(g_renderMutex);
+    // The log is closed once no instance is left, so the next one starts a
+    // fresh file that needs its one-time notes again.
+    if (g_liveInstances.empty()) {
+        g_idleExplained = false;
+        g_loggedConfigWarning.clear();
+    }
+    uint32_t apiVersion = VK_API_VERSION_1_0;
     if (pCreateInfo->pApplicationInfo && pCreateInfo->pApplicationInfo->apiVersion)
-        g_apiVersion = pCreateInfo->pApplicationInfo->apiVersion;
+        apiVersion = pCreateInfo->pApplicationInfo->apiVersion;
+    g_liveInstances.push_back({*pInstance, gipa, apiVersion});
+    AdoptInstance(g_liveInstances.back());
 
     // Load config early so the process gate can consult it.
     g_config.load();
+    LogConfigWarning();
 
     // Environment kill-switch (also declared in the layer manifest).
     const char* off = getenv("DISABLE_RANDOVERLAY");
@@ -683,8 +821,11 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_CreateInstance(
     bool targeted = rogate::isTargetProcess(g_config.emulatorProcs) &&
                     rogate::isProcessEnabledForPresets(processExe, g_config.enabledPresets);
     g_disabled = envOff || !targeted;
-    g_idleExplained = false; // DestroyInstance closed the log; explain again in the new one
     if (!g_disabled) RefreshRuntimePreset();
+    // A second instance mid-session re-read the ini above. When the detected
+    // preset already matched, RefreshRuntimePreset did not reload, so apply any
+    // font change here; after a reload this finds nothing left to do.
+    ApplyFontSettings();
 
     LayerLog("=== RandOverlay Layer loaded ===");
     LayerLog("vkCreateInstance OK, instance=0x%p", (void*)*pInstance);
@@ -714,7 +855,8 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_CreateDevice(
              loaderDataInfo->function == VK_LOADER_DATA_CALLBACK)) {
         loaderDataInfo = (VkLayerDeviceCreateInfo*)loaderDataInfo->pNext;
     }
-    g_setDeviceLoaderData = loaderDataInfo ? loaderDataInfo->u.pfnSetDeviceLoaderData : nullptr;
+    PFN_vkSetDeviceLoaderData setLoaderData =
+        loaderDataInfo ? loaderDataInfo->u.pfnSetDeviceLoaderData : nullptr;
 
     auto* layerInfo = (VkLayerDeviceCreateInfo*)pCreateInfo->pNext;
     while (layerInfo && !(layerInfo->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO &&
@@ -731,7 +873,12 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_CreateDevice(
     VkResult result = createDevice(physDevice, pCreateInfo, pAllocator, pDevice);
     if (result != VK_SUCCESS) return result;
 
-    InitDeviceDispatch(*pDevice, gdpa);
+    // Use the table just recorded instead of looking it back up, so there is
+    // no lookup miss between creating the downstream device and returning it.
+    DeviceDispatch d = InitDeviceDispatch(*pDevice, gdpa);
+
+    std::lock_guard<std::mutex> lock(g_renderMutex);
+    g_setDeviceLoaderData = setLoaderData;
     g_nextGDPA       = gdpa;
     g_device         = *pDevice;
     g_physicalDevice = physDevice;
@@ -740,7 +887,6 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_CreateDevice(
         g_queueFamily = pCreateInfo->pQueueCreateInfos[0].queueFamilyIndex;
 
     // Retrieve a concrete queue from the (graphics) family used for the pool/submits.
-    auto& d = GetDeviceDispatch(*pDevice);
     if (d.GetDeviceQueue) d.GetDeviceQueue(*pDevice, g_queueFamily, 0, &g_graphicsQueue);
 
     LayerLog("vkCreateDevice OK, device=0x%p, queueFamily=%u, queue=0x%p",
@@ -755,13 +901,19 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_CreateSwapchainKHR(
     const VkAllocationCallbacks* pAllocator,
     VkSwapchainKHR* pSwapchain)
 {
+    std::lock_guard<std::mutex> lock(g_renderMutex);
     LayerLog("vkCreateSwapchainKHR entry (%ux%u format=%d oldSwapchain=0x%p)",
              pCreateInfo->imageExtent.width, pCreateInfo->imageExtent.height,
              pCreateInfo->imageFormat, (void*)pCreateInfo->oldSwapchain);
 
+    DeviceDispatch d;
+    if (!TryGetDeviceDispatch(device, d) || !d.CreateSwapchainKHR) {
+        LayerLog("vkCreateSwapchainKHR: no dispatch table for device 0x%p", (void*)device);
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
     if (g_renderReady) CleanupRender(device); // resolution / fullscreen toggle etc.
 
-    auto& d = GetDeviceDispatch(device);
     VkResult result = d.CreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
     if (result != VK_SUCCESS) { LayerLog("real CreateSwapchainKHR failed: %d", result); return result; }
 
@@ -780,12 +932,47 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_CreateSwapchainKHR(
     return VK_SUCCESS;
 }
 
+// ── Hooked: vkDestroySwapchainKHR ─────────────────────────────────────────────
+// The overlay's image views and framebuffers are built over the swapchain's
+// images. An app that destroys its swapchain without immediately creating
+// another (minimise, surface loss, shutdown, destroy-then-create) must not
+// leave them pointing at images that no longer exist.
+VK_LAYER_EXPORT void VKAPI_CALL RandOverlay_DestroySwapchainKHR(
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    const VkAllocationCallbacks* pAllocator)
+{
+    std::lock_guard<std::mutex> lock(g_renderMutex);
+    if (swapchain != VK_NULL_HANDLE && swapchain == g_swapchain) {
+        LayerLog("vkDestroySwapchainKHR: releasing overlay resources");
+        if (g_renderReady) CleanupRender(device);
+        g_swapchain = VK_NULL_HANDLE;
+    }
+
+    DeviceDispatch d;
+    if (!TryGetDeviceDispatch(device, d) || !d.DestroySwapchainKHR) {
+        LayerLog("vkDestroySwapchainKHR: no dispatch table for device 0x%p", (void*)device);
+        return;
+    }
+    d.DestroySwapchainKHR(device, swapchain, pAllocator);
+}
+
 // ── Hooked: vkQueuePresentKHR ─────────────────────────────────────────────────
 VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_QueuePresentKHR(
     VkQueue queue,
     const VkPresentInfoKHR* pPresentInfo)
 {
-    auto& d = GetDeviceDispatch(queue); // queue shares the device's dispatch key
+    std::unique_lock<std::mutex> lock(g_renderMutex);
+
+    DeviceDispatch d; // queue shares the device's dispatch key
+    if (!TryGetDeviceDispatch(queue, d) || !d.QueuePresentKHR) {
+        static bool s_missLogged = false;
+        if (!s_missLogged) {
+            s_missLogged = true;
+            LayerLog("vkQueuePresentKHR: no dispatch table for queue 0x%p", (void*)queue);
+        }
+        return VK_ERROR_DEVICE_LOST;
+    }
 
     static bool s_qpFirst = true;
     if (s_qpFirst) { s_qpFirst = false;
@@ -856,6 +1043,8 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_QueuePresentKHR(
                 VkPresentInfoKHR mod = *pPresentInfo;
                 mod.waitSemaphoreCount = 1;
                 mod.pWaitSemaphores    = &g_overlaySems[idx];
+                // Still under g_renderMutex: a concurrent swapchain rebuild
+                // must not destroy the semaphore this present waits on.
                 VkResult presentResult = d.QueuePresentKHR(queue, &mod);
                 return presentResult;
             }
@@ -863,6 +1052,9 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_QueuePresentKHR(
         }
     }
 
+    // Undecorated: nothing of ours is referenced, so do not hold the lock
+    // across the downstream call.
+    lock.unlock();
     return d.QueuePresentKHR(queue, pPresentInfo);
 }
 
@@ -870,34 +1062,63 @@ VK_LAYER_EXPORT VkResult VKAPI_CALL RandOverlay_QueuePresentKHR(
 VK_LAYER_EXPORT void VKAPI_CALL RandOverlay_DestroyDevice(
     VkDevice device, const VkAllocationCallbacks* pAllocator)
 {
+    if (device == VK_NULL_HANDLE) return; // a valid no-op for the app
+    std::lock_guard<std::mutex> lock(g_renderMutex);
     LayerLog("vkDestroyDevice");
-    if (g_renderReady) CleanupRender(device);
-    auto& d = GetDeviceDispatch(device);
-    d.DestroyDevice(device, pAllocator);
+    // Only the device the overlay renders with owns the render resources.
+    if (device == g_device) {
+        if (g_renderReady) CleanupRender(device);
+        g_swapchain = VK_NULL_HANDLE;
+        g_device = VK_NULL_HANDLE;
+        g_graphicsQueue = VK_NULL_HANDLE;
+    }
 
-    std::lock_guard<std::mutex> lock(g_dispatchMutex);
-    g_deviceDispatch.erase(GetDispatchKey(device));
-    g_device = VK_NULL_HANDLE;
-    g_graphicsQueue = VK_NULL_HANDLE;
+    void* key = GetDispatchKey(device); // read before the handle is freed
+    DeviceDispatch d;
+    if (TryGetDeviceDispatch(device, d) && d.DestroyDevice)
+        d.DestroyDevice(device, pAllocator);
+    else
+        LayerLog("vkDestroyDevice: no dispatch table for device 0x%p", (void*)device);
+
+    std::lock_guard<std::mutex> dispatchLock(g_dispatchMutex);
+    g_deviceDispatch.erase(key);
 }
 
 // ── Hooked: vkDestroyInstance ─────────────────────────────────────────────────
 VK_LAYER_EXPORT void VKAPI_CALL RandOverlay_DestroyInstance(
     VkInstance instance, const VkAllocationCallbacks* pAllocator)
 {
+    if (instance == VK_NULL_HANDLE) return; // a valid no-op for the app
+    std::lock_guard<std::mutex> lock(g_renderMutex);
     LayerLog("vkDestroyInstance");
-    delete g_logReader;
-    g_logReader = nullptr;
 
-    auto& d = GetInstanceDispatch(instance);
-    d.DestroyInstance(instance, pAllocator);
-
+    void* key = GetDispatchKey(instance); // read before the handle is freed
+    InstanceDispatch d;
+    if (TryGetInstanceDispatch(instance, d) && d.DestroyInstance)
+        d.DestroyInstance(instance, pAllocator);
+    else
+        LayerLog("vkDestroyInstance: no dispatch table for instance 0x%p", (void*)instance);
     {
-        std::lock_guard<std::mutex> lock(g_dispatchMutex);
-        g_instanceDispatch.erase(GetDispatchKey(instance));
+        std::lock_guard<std::mutex> dispatchLock(g_dispatchMutex);
+        g_instanceDispatch.erase(key);
     }
-    g_instance = VK_NULL_HANDLE;
-    if (g_log) { fclose(g_log); g_log = nullptr; }
+
+    g_liveInstances.erase(
+        std::remove_if(g_liveInstances.begin(), g_liveInstances.end(),
+                       [&](const LiveInstance& li) { return li.handle == instance; }),
+        g_liveInstances.end());
+    // Another live instance (an adapter probe, or the game's own instance
+    // when a probe was the newest) takes over instead of the overlay losing
+    // its instance and log reader.
+    if (instance == g_instance) {
+        if (!g_liveInstances.empty()) AdoptInstance(g_liveInstances.back());
+        else g_instance = VK_NULL_HANDLE;
+    }
+    if (g_liveInstances.empty()) {
+        delete g_logReader;
+        g_logReader = nullptr;
+        CloseLayerLog();
+    }
 }
 
 // ── Layer entry points ────────────────────────────────────────────────────────
@@ -911,10 +1132,12 @@ VK_LAYER_EXPORT PFN_vkVoidFunction VKAPI_CALL RandOverlay_GetDeviceProcAddr(
     GETPROCADDR(GetDeviceProcAddr);
     GETPROCADDR(QueuePresentKHR);
     GETPROCADDR(CreateSwapchainKHR);
+    GETPROCADDR(DestroySwapchainKHR);
     GETPROCADDR(DestroyDevice);
 
-    auto& d = GetDeviceDispatch(device);
-    if (!d.GetDeviceProcAddr) return nullptr;
+    if (device == VK_NULL_HANDLE) return nullptr;
+    DeviceDispatch d;
+    if (!TryGetDeviceDispatch(device, d) || !d.GetDeviceProcAddr) return nullptr;
     return d.GetDeviceProcAddr(device, pName);
 }
 
@@ -928,12 +1151,13 @@ VK_LAYER_EXPORT PFN_vkVoidFunction VKAPI_CALL RandOverlay_GetInstanceProcAddr(
     // Device-level functions may also be queried through the instance.
     GETPROCADDR(QueuePresentKHR);
     GETPROCADDR(CreateSwapchainKHR);
+    GETPROCADDR(DestroySwapchainKHR);
     GETPROCADDR(DestroyDevice);
     GETPROCADDR(GetDeviceProcAddr);
 
     if (instance == VK_NULL_HANDLE) return nullptr;
-    auto& d = GetInstanceDispatch(instance);
-    if (!d.GetInstanceProcAddr) return nullptr;
+    InstanceDispatch d;
+    if (!TryGetInstanceDispatch(instance, d) || !d.GetInstanceProcAddr) return nullptr;
     return d.GetInstanceProcAddr(instance, pName);
 }
 

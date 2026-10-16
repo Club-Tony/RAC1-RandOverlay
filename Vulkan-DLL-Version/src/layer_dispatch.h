@@ -4,9 +4,31 @@
  * Stores per-instance and per-device dispatch tables so our layer can
  * call the next layer's functions in the chain.
  */
-#include <vulkan/vulkan.h>
 #include <unordered_map>
 #include <mutex>
+
+namespace rodispatch {
+
+// Lookup-only access to a dispatch map: copies the table out under the lock
+// and reports a miss instead of inserting. operator[] would value-initialise
+// an all-null table for a handle the layer never recorded, and a reference
+// into the map dangles as soon as another thread inserts (rehash) or erases.
+// Free of Vulkan types so the headless unit tests can exercise it.
+template <typename Table>
+inline bool tryGet(std::mutex& mutex, const std::unordered_map<void*, Table>& map,
+                   void* key, Table& out) {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = map.find(key);
+    if (it == map.end()) return false;
+    out = it->second;
+    return true;
+}
+
+} // namespace rodispatch
+
+// The unit tests define this to take only the lookup above.
+#ifndef RANDOVERLAY_DISPATCH_LOOKUP_ONLY
+#include <vulkan/vulkan.h>
 
 // Instance-level dispatch table (functions resolved via vkGetInstanceProcAddr)
 struct InstanceDispatch {
@@ -72,8 +94,9 @@ static void InitInstanceDispatch(VkInstance instance, PFN_vkGetInstanceProcAddr 
     g_instanceDispatch[GetDispatchKey(instance)] = d;
 }
 
-// Helper to load device dispatch table
-static void InitDeviceDispatch(VkDevice device, PFN_vkGetDeviceProcAddr gdpa) {
+// Helper to load device dispatch table. Returns the table it recorded so the
+// caller never has to look it straight back up.
+static DeviceDispatch InitDeviceDispatch(VkDevice device, PFN_vkGetDeviceProcAddr gdpa) {
     DeviceDispatch d = {};
     d.GetDeviceProcAddr = gdpa;
     #define LOAD_D(name) d.name = (PFN_vk##name)gdpa(device, "vk" #name)
@@ -109,14 +132,20 @@ static void InitDeviceDispatch(VkDevice device, PFN_vkGetDeviceProcAddr gdpa) {
 
     std::lock_guard<std::mutex> lock(g_dispatchMutex);
     g_deviceDispatch[GetDispatchKey(device)] = d;
+    return d;
 }
 
-static InstanceDispatch& GetInstanceDispatch(void* handle) {
-    std::lock_guard<std::mutex> lock(g_dispatchMutex);
-    return g_instanceDispatch[GetDispatchKey(handle)];
+// Init*Dispatch above are the only writers that may insert. Everything else
+// goes through these, which return false for a handle with no recorded table
+// (never seen, or already destroyed) and otherwise fill `out` with a copy.
+static bool TryGetInstanceDispatch(void* handle, InstanceDispatch& out) {
+    if (!handle) return false;
+    return rodispatch::tryGet(g_dispatchMutex, g_instanceDispatch, GetDispatchKey(handle), out);
 }
 
-static DeviceDispatch& GetDeviceDispatch(void* handle) {
-    std::lock_guard<std::mutex> lock(g_dispatchMutex);
-    return g_deviceDispatch[GetDispatchKey(handle)];
+static bool TryGetDeviceDispatch(void* handle, DeviceDispatch& out) {
+    if (!handle) return false;
+    return rodispatch::tryGet(g_dispatchMutex, g_deviceDispatch, GetDispatchKey(handle), out);
 }
+
+#endif // RANDOVERLAY_DISPATCH_LOOKUP_ONLY

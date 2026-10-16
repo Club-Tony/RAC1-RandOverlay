@@ -25,16 +25,7 @@ $BgOpacity        = 0.80
 $CornerRadius     = 12
 $PollMs           = 1500
 $EmulatorProcesses = @("rpcs3", "pcsx2-qt", "pcsx2")
-
-# ── Message color map ──────────────────────────────────────────────────────────
-$OverlayColor = "#80A0D0"   # RAC1 steel blue (brighter)
-$ColorMap = [ordered]@{
-    "test"                   = $OverlayColor
-    "found their"            = $OverlayColor
-    "completed their goal"   = $OverlayColor
-    "Congratulations"        = $OverlayColor
-    "released all remaining" = $OverlayColor
-}
+$OverlayColor     = "#80A0D0"   # RAC1 steel blue (brighter)
 
 $ConfigFile = Join-Path (Split-Path -Parent $PSScriptRoot) "RandOverlay.ini"
 $script:ConfigWarning = $null
@@ -106,15 +97,21 @@ function Get-IniValue([hashtable]$Ini, [string]$Section, [string]$Key, [string]$
 function Get-ConfigInt([hashtable]$Ini, [string]$Section, [string]$Key, [int]$Default, [int]$Minimum = 0) {
     $raw = Get-IniValue $Ini $Section $Key ([string]$Default)
     $value = 0
-    if ([int]::TryParse($raw, [ref]$value) -and $value -ge $Minimum) { return $value }
+    # Same accepted form as the AHK runtime: an optional '-' and digits, nothing else.
+    if ($raw -match '^-?[0-9]+$' -and [int]::TryParse($raw, [ref]$value) -and $value -ge $Minimum) { return $value }
     Set-ConfigWarning "Invalid $Section.$Key; using default."
     return $Default
 }
 
-function Get-ConfigDouble([hashtable]$Ini, [string]$Section, [string]$Key, [double]$Default) {
+function Get-ConfigDouble([hashtable]$Ini, [string]$Section, [string]$Key, [double]$Default,
+                          [double]$Minimum = [double]::MinValue, [double]$Maximum = [double]::MaxValue) {
     $raw = Get-IniValue $Ini $Section $Key ([string]$Default)
-    $value = 0.0
-    if ([double]::TryParse($raw, [ref]$value)) { return $value }
+    # Same accepted form as the AutoHotkey runtime, parsed with '.' as the
+    # decimal point whatever the user's locale.
+    if ($raw -cmatch '^-?[0-9]+(\.[0-9]+)?$') {
+        $value = [double]::Parse($raw, [System.Globalization.CultureInfo]::InvariantCulture)
+        if ($value -ge $Minimum -and $value -le $Maximum) { return $value }
+    }
     Set-ConfigWarning "Invalid $Section.$Key; using default."
     return $Default
 }
@@ -169,7 +166,7 @@ $FontFamily       = Get-IniValue $Ini $PresetSection "FontFamily" $PresetDefault
 $FontFallback     = Get-IniValue $Ini $PresetSection "FontFallback" $PresetDefault.FontFallback
 $script:currentFont = $null
 $FontSize         = Get-ConfigInt $Ini $PresetSection "WpfFontSize" ([int]$PresetDefault.WpfFontSize) 1
-$VerticalPercent  = Get-ConfigDouble $Ini $PresetSection "VerticalPercent" ([double]$PresetDefault.VerticalPercent)
+$VerticalPercent  = Get-ConfigDouble $Ini $PresetSection "VerticalPercent" ([double]$PresetDefault.VerticalPercent) 0 1
 $BgColor          = Get-ConfigHex $Ini $PresetSection "BackgroundColor" $PresetDefault.BackgroundColor
 $BgOpacity        = 0.80
 $CornerRadius     = 12
@@ -179,14 +176,6 @@ $EmulatorProcesses = @(Get-ConfigCsv $Ini $PresetSection "EmulatorProcesses" $Pr
 })
 
 Write-Log "Active preset: $ActivePreset ($DisplayName)"
-
-$ColorMap = [ordered]@{
-    "test"                   = $OverlayColor
-    "found their"            = $OverlayColor
-    "completed their goal"   = $OverlayColor
-    "Congratulations"        = $OverlayColor
-    "released all remaining" = $OverlayColor
-}
 
 # ── Assemblies ─────────────────────────────────────────────────────────────────
 Add-Type -AssemblyName PresentationFramework
@@ -204,7 +193,6 @@ public class OverlayWinApi {
     [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr hwnd, int index, int newStyle);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
-    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left, Top, Right, Bottom; }
@@ -249,6 +237,7 @@ Write-Log "Assemblies loaded"
 
 # ── State ──────────────────────────────────────────────────────────────────────
 $script:lastLineCount    = 0
+$script:lastFileSize     = 0
 $script:currentLogFile   = $null
 $script:overlayEnabled   = $true
 $script:displayTimer     = $null
@@ -282,11 +271,27 @@ function Get-EmulatorBounds {
     return $null
 }
 
-function Get-MessageColor($text) {
-    foreach ($pattern in $ColorMap.Keys) {
-        if ($text.Contains($pattern)) { return $ColorMap[$pattern] }
+# Returns the overlay text for one Archipelago client log line, or $null when it
+# is not shown. Pure: the same contract as the AutoHotkey and Vulkan runtimes,
+# pinned by tests/fixtures/archipelago-log-lines.tsv.
+function ConvertFrom-ArchipelagoLine([string]$Line) {
+    # The "[FileLog at ...]:" / "[Client at ...]:" prefix is case-sensitive.
+    if (-not ($Line -cmatch '^\[(FileLog|Client) at [^\]]+\]:\s*(.*)')) { return $null }
+    $message = $Matches[2]
+
+    # Keywords match with A-Z folded to a-z and nothing else, like AutoHotkey's InStr.
+    $folded = $message
+    for ($c = 65; $c -le 90; $c++) { $folded = $folded.Replace([char]$c, [char]($c + 32)) }
+    $shown = $false
+    foreach ($keyword in @("test", "found their", "completed their goal", "congratulations", "released all remaining")) {
+        if ($folded.Contains($keyword)) { $shown = $true; break }
     }
-    return $null
+    if (-not $shown) { return $null }
+
+    # Cut a trailing location from the first "(" when the message ends in ")".
+    $text = ($message -replace '\s*\(.*\)\s*$', '').Trim([char[]]@([char]' ', [char]"`t"))
+    if (-not $text) { return $null }
+    return $text
 }
 
 function Read-NewLines {
@@ -296,11 +301,23 @@ function Read-NewLines {
         $script:currentLogFile = $newest
         # #8 HIGH: Seed new log instead of resetting to 0 (prevents message flood)
         try {
+            $script:lastFileSize = (Get-Item -LiteralPath $newest -ErrorAction Stop).Length
             $seedLines = @(Get-Content -Path $newest -ErrorAction Stop)
             $script:lastLineCount = $seedLines.Count
-        } catch { $script:lastLineCount = 0 }
+        } catch {
+            $script:lastLineCount = 0
+            $script:lastFileSize = 0
+        }
     }
     if (-not $script:currentLogFile -or -not (Test-Path $script:currentLogFile)) { return @() }
+
+    # Cheap guard: skip the full read unless the file size changed.
+    try {
+        $size = (Get-Item -LiteralPath $script:currentLogFile -ErrorAction Stop).Length
+    } catch {
+        return @()
+    }
+    if ($size -eq $script:lastFileSize) { return @() }
 
     try {
         $lines = @(Get-Content -Path $script:currentLogFile -ErrorAction Stop)
@@ -308,23 +325,36 @@ function Read-NewLines {
         Write-Host "  [read error] $($_.Exception.Message)"
         return @()
     }
+
+    # A shorter file, or fewer lines than last time, was truncated in place:
+    # read it again from the top. Only the latest message is shown, so this
+    # cannot flood the overlay.
+    if ($size -lt $script:lastFileSize -or $lines.Count -lt $script:lastLineCount) {
+        Write-Log "Log shrank; reading it from the top"
+        $script:lastLineCount = 0
+    }
+    $script:lastFileSize = $size
     $newMessages = @()
 
     if ($lines.Count -gt $script:lastLineCount) {
         for ($i = $script:lastLineCount; $i -lt $lines.Count; $i++) {
-            $line = $lines[$i]
-            if ($line -match '^\[(FileLog|Client) at [^\]]+\]:\s*(.*)') {
-                $msg = $Matches[2]
-                $color = Get-MessageColor $msg
-                if ($color) {
-                    $msg = ($msg -replace '\s*\(.*\)\s*$', '').Trim()
-                    $newMessages += @{ Text = $msg; Color = $color }
-                }
-            }
+            $text = ConvertFrom-ArchipelagoLine $lines[$i]
+            # Every shown event uses the preset's single overlay color.
+            if ($null -ne $text) { $newMessages += @{ Text = $text; Color = $OverlayColor } }
         }
         $script:lastLineCount = $lines.Count
     }
     return $newMessages
+}
+
+# Converts device-pixel bounds to WPF device-independent units with a window's
+# CompositionTarget.TransformFromDevice matrix. $null (no presentation source
+# yet) leaves them unchanged. Pure, so the scaling is unit tested.
+function ConvertTo-DipBounds([hashtable]$Bounds, $TransformFromDevice) {
+    if ($null -eq $TransformFromDevice) { return $Bounds }
+    $topLeft = $TransformFromDevice.Transform((New-Object System.Windows.Point($Bounds.Left, $Bounds.Top)))
+    $size = $TransformFromDevice.Transform((New-Object System.Windows.Vector($Bounds.Width, $Bounds.Height)))
+    return @{ Left = $topLeft.X; Top = $topLeft.Y; Width = $size.X; Height = $size.Y }
 }
 
 function Position-Overlay {
@@ -334,6 +364,12 @@ function Position-Overlay {
         $screen = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
         $bounds = @{ Left = $screen.Left; Top = $screen.Top; Width = $screen.Width; Height = $screen.Height }
     }
+    # GetWindowRect and Screen.WorkingArea are in device pixels, but
+    # Window.Left/Top are DIPs; they differ on any display not at 100% scale.
+    $source = [System.Windows.PresentationSource]::FromVisual($script:window)
+    $transform = $null
+    if ($source -and $source.CompositionTarget) { $transform = $source.CompositionTarget.TransformFromDevice }
+    $bounds = ConvertTo-DipBounds $bounds $transform
     $script:window.UpdateLayout()
     $w = $script:window.ActualWidth
     if ($w -le 0) { $w = 500 }
@@ -426,8 +462,9 @@ if (-not $script:currentLogFile) {
 
 Write-Log "Using log: $($script:currentLogFile)"
 
-# Seed line count (skip existing content)
+# Seed file size and line count (skip existing content)
 try {
+    $script:lastFileSize = (Get-Item -LiteralPath $script:currentLogFile -ErrorAction Stop).Length
     $seedLines = @(Get-Content -Path $script:currentLogFile -ErrorAction Stop)
     $script:lastLineCount = $seedLines.Count
     Write-Host "Seeded at $($script:lastLineCount) lines"
@@ -435,6 +472,7 @@ try {
 } catch {
     Write-Host "Seed failed: $($_.Exception.Message)"
     $script:lastLineCount = 0
+    $script:lastFileSize = 0
 }
 
 # ── Build WPF window ──────────────────────────────────────────────────────────

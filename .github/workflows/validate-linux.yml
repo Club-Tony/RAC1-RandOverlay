@@ -5,18 +5,22 @@ name: Validate (Linux)
 # (Test-RandOverlay.ps1 asserts its runs-on marker).
 #
 # Real-emulator certification is NOT done here and cannot be: it needs a native
-# RPCS3/PCSX2 and a real swapchain. See Plans/linux-vulkan-layer-port.md.
+# RPCS3/PCSX2 and a real game. What the mock host does cover, and what stays a
+# manual step, is described under "Automated live verification" in
+# Vulkan-DLL-Version/README.md.
 
 on:
   push:
     paths:
       - 'Vulkan-DLL-Version/**'
       - 'RandOverlay.ini'
+      - 'tests/fixtures/**'
       - '.github/workflows/validate-linux.yml'
   pull_request:
     paths:
       - 'Vulkan-DLL-Version/**'
       - 'RandOverlay.ini'
+      - 'tests/fixtures/**'
       - '.github/workflows/validate-linux.yml'
   workflow_dispatch:
 

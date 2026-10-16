@@ -72,13 +72,28 @@ function Invoke-NativeCommand {
     $proc.StartInfo = $psi
     [void]$proc.Start()
 
+    # Drain both pipes while the child runs. A child that fills a pipe buffer
+    # blocks on write and never exits if nothing reads until it is done.
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $readTasks = [System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask)
+
     if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
         try { $proc.Kill() } catch { }
-        throw "Timed out after ${TimeoutSeconds}s: $FilePath $($psi.Arguments)"
+        # Still drain what was written, without waiting forever on a grandchild
+        # that inherited the pipes.
+        $partial = ""
+        if ([System.Threading.Tasks.Task]::WaitAll($readTasks, 5000)) {
+            $partial = ($stdoutTask.GetAwaiter().GetResult() + $stderrTask.GetAwaiter().GetResult()).Trim()
+        }
+        throw "Timed out after ${TimeoutSeconds}s: $FilePath $($psi.Arguments)`n$partial"
     }
 
-    $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
+    if (-not [System.Threading.Tasks.Task]::WaitAll($readTasks, $TimeoutSeconds * 1000)) {
+        throw "Output pipes stayed open after exit: $FilePath $($psi.Arguments)"
+    }
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
 
     return [pscustomobject]@{
         ExitCode = $proc.ExitCode
@@ -93,9 +108,28 @@ function Resolve-AutoHotkey {
 
     $candidates = @()
     if ($Preferred) { $candidates += $Preferred }
-    $candidates += "C:\Program Files\AutoHotkey\v1.1.37.02\AutoHotkeyU64.exe"
-    $candidates += "C:\Program Files\AutoHotkey\AutoHotkeyU64.exe"
-    $candidates += "C:\Program Files\AutoHotkey\AutoHotkey.exe"
+
+    # CI installs the autohotkey.portable package. Use its real executable rather
+    # than the Chocolatey shim on PATH, which may neither wait for the script nor
+    # pass its output through, so a check could pass without running anything.
+    # The package renames the build for the machine's bitness to AutoHotkey.exe.
+    $chocolateyRoot = if ($env:ChocolateyInstall) { $env:ChocolateyInstall } else { "C:\ProgramData\chocolatey" }
+    $chocolateyTools = Join-Path $chocolateyRoot "lib\autohotkey.portable\tools"
+    $candidates += Join-Path $chocolateyTools "AutoHotkey.exe"
+    $candidates += Join-Path $chocolateyTools "AutoHotkeyU64.exe"
+
+    # The v2 installer keeps each v1 release in its own v1.* folder; newest first.
+    $installRoot = "C:\Program Files\AutoHotkey"
+    $candidates += @(Get-ChildItem -LiteralPath $installRoot -Directory -Filter "v1.*" -ErrorAction SilentlyContinue |
+        Sort-Object -Descending -Property @{ Expression = {
+            $version = $null
+            if ([version]::TryParse($_.Name.Substring(1), [ref]$version)) { $version } else { [version]"0.0" }
+        } } |
+        ForEach-Object { Join-Path $_.FullName "AutoHotkeyU64.exe" })
+
+    # The standalone v1 installer layout.
+    $candidates += Join-Path $installRoot "AutoHotkeyU64.exe"
+    $candidates += Join-Path $installRoot "AutoHotkey.exe"
 
     foreach ($candidate in $candidates) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) {
@@ -111,10 +145,57 @@ function Resolve-AutoHotkey {
     throw "AutoHotkey v1 executable was not found. Pass -AutoHotkeyPath if it is installed elsewhere."
 }
 
+# Returns the source of named functions from a script without running the script,
+# so callers can dot-source just those functions into their own scope.
+function Get-ScriptFunctionSource([string]$Path, [string[]]$Name) {
+    $tokens = $null
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+    if ($errors.Count) {
+        throw "${Path}: " + (($errors | ForEach-Object { $_.Message }) -join "; ")
+    }
+
+    $sources = foreach ($functionName in $Name) {
+        $definitions = @($ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
+        }, $true))
+        if ($definitions.Count -ne 1) {
+            throw "Expected one definition of $functionName in $Path, found $($definitions.Count)."
+        }
+        $definitions[0].Extent.Text
+    }
+    return ($sources -join [Environment]::NewLine)
+}
+
+# Reads tests\fixtures\archipelago-log-lines.tsv: <input><TAB><expected>, split on
+# the last tab, with <none> meaning the line is not shown.
+function Get-ArchipelagoFixtureRows {
+    $rows = @()
+    $lineNumber = 0
+    foreach ($rawLine in [System.IO.File]::ReadAllText($FixturePath).Split("`n")) {
+        $lineNumber++
+        $row = $rawLine.Replace("`r", "")
+        if (-not $row -or $row.StartsWith("#", [StringComparison]::Ordinal)) { continue }
+
+        $tab = $row.LastIndexOf("`t")
+        if ($tab -lt 0) { throw "Fixture line $lineNumber has no tab." }
+        $expected = $row.Substring($tab + 1)
+        if ($expected -ceq "<none>") { $expected = $null }
+        $rows += [pscustomobject]@{ Line = $lineNumber; Input = $row.Substring(0, $tab); Expected = $expected }
+    }
+    if ($rows.Count -eq 0) { throw "Fixture has no rows: $FixturePath" }
+    return $rows
+}
+
+$OverlayScript = Join-Path $Root "PS+WPF-Version\RandOverlay.ps1"
+$FixturePath = Join-Path $Root "tests\fixtures\archipelago-log-lines.tsv"
+
 $Ahk = $null
 Invoke-Check "Resolve AutoHotkey" {
     $script:Ahk = Resolve-AutoHotkey $AutoHotkeyPath
-    Write-Host "Using $script:Ahk"
+    $ahkVersion = (Get-Item -LiteralPath $script:Ahk).VersionInfo.FileVersion
+    Write-Host "Using $script:Ahk (FileVersion $ahkVersion)"
 }
 
 if (-not $SkipGit) {
@@ -209,29 +290,198 @@ Invoke-Check "GitHub Actions workflow shape" {
     }
 }
 
+Invoke-Check "Release workflow test gates" {
+    $workflowPath = Join-Path $Root ".github\workflows\release-vulkan.yml"
+    if (-not (Test-Path -LiteralPath $workflowPath)) {
+        throw "Missing .github\workflows\release-vulkan.yml"
+    }
+
+    # Index of the first line that runs the script: comments and step names do not count.
+    $lines = @(Get-Content -LiteralPath $workflowPath)
+    $findRun = {
+        param([string]$ScriptName)
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^\s*#' -or $lines[$i] -match '^\s*(-\s+)?name:') { continue }
+            if ($lines[$i] -match [regex]::Escape($ScriptName)) { return $i }
+        }
+        return -1
+    }
+
+    $buildLine = & $findRun "Build-RandOverlayRelease.ps1"
+    if ($buildLine -lt 0) { throw "release-vulkan.yml never runs Build-RandOverlayRelease.ps1" }
+    foreach ($gate in @("Test-Installer.ps1", "Test-Stack.ps1")) {
+        $gateLine = & $findRun $gate
+        if ($gateLine -lt 0) { throw "release-vulkan.yml never runs $gate" }
+        if ($gateLine -gt $buildLine) {
+            throw "release-vulkan.yml runs $gate (line $($gateLine + 1)) after Build-RandOverlayRelease.ps1 (line $($buildLine + 1))"
+        }
+    }
+}
+
+Invoke-Check "PowerShell Archipelago fixture" {
+    . ([scriptblock]::Create((Get-ScriptFunctionSource $OverlayScript @("ConvertFrom-ArchipelagoLine"))))
+
+    $mismatches = @()
+    foreach ($row in Get-ArchipelagoFixtureRows) {
+        $actual = ConvertFrom-ArchipelagoLine $row.Input
+        if ($actual -cne $row.Expected) {
+            $mismatches += "line $($row.Line): expected [$($row.Expected)] got [$actual]"
+        }
+    }
+    if ($mismatches.Count) { throw ($mismatches -join "`n") }
+}
+
+Invoke-Check "PowerShell VerticalPercent range" {
+    . ([scriptblock]::Create((Get-ScriptFunctionSource $OverlayScript @("Set-ConfigWarning", "Get-IniValue", "Get-ConfigDouble"))))
+    function Write-Log($msg) { }
+
+    $section = "Preset.RAC1"
+    $warning = "Invalid $section.VerticalPercent; using default."
+    $problems = @()
+    foreach ($case in @(
+        @{ Raw = $null;  Expected = 0.17; Warns = $false },
+        @{ Raw = "0.5";  Expected = 0.5;  Warns = $false },
+        @{ Raw = "0";    Expected = 0.0;  Warns = $false },
+        @{ Raw = "1";    Expected = 1.0;  Warns = $false },
+        @{ Raw = "1.5";  Expected = 0.17; Warns = $true },
+        @{ Raw = "-0.1"; Expected = 0.17; Warns = $true },
+        @{ Raw = "0,5";  Expected = 0.17; Warns = $true },
+        @{ Raw = "1e-1"; Expected = 0.17; Warns = $true },
+        @{ Raw = "high"; Expected = 0.17; Warns = $true }
+    )) {
+        $script:ConfigWarning = $null
+        $ini = @{ $section = @{} }
+        if ($null -ne $case.Raw) { $ini[$section]["VerticalPercent"] = $case.Raw }
+
+        $value = Get-ConfigDouble $ini $section "VerticalPercent" 0.17 0 1
+        $expectedWarning = if ($case.Warns) { $warning } else { $null }
+        if ($value -ne $case.Expected -or $script:ConfigWarning -cne $expectedWarning) {
+            $problems += "VerticalPercent=[$($case.Raw)] gave $value with warning [$script:ConfigWarning]"
+        }
+    }
+    $script:ConfigWarning = $null
+    if ($problems.Count) { throw ($problems -join "`n") }
+}
+
+Invoke-Check "PowerShell integer settings" {
+    . ([scriptblock]::Create((Get-ScriptFunctionSource $OverlayScript @("Set-ConfigWarning", "Get-IniValue", "Get-ConfigInt"))))
+    function Write-Log($msg) { }
+
+    $warning = "Invalid General.PollMs; using default."
+    $problems = @()
+    foreach ($case in @(
+        @{ Raw = $null;   Expected = 1500; Warns = $false },
+        @{ Raw = "250";   Expected = 250;  Warns = $false },
+        @{ Raw = "1";     Expected = 1;    Warns = $false },
+        @{ Raw = "0";     Expected = 1500; Warns = $true },
+        @{ Raw = "-5";    Expected = 1500; Warns = $true },
+        @{ Raw = "+5";    Expected = 1500; Warns = $true },
+        @{ Raw = "12abc"; Expected = 1500; Warns = $true },
+        @{ Raw = "1.5";   Expected = 1500; Warns = $true }
+    )) {
+        $script:ConfigWarning = $null
+        $ini = @{ General = @{} }
+        if ($null -ne $case.Raw) { $ini["General"]["PollMs"] = $case.Raw }
+
+        $value = Get-ConfigInt $ini "General" "PollMs" 1500 1
+        $expectedWarning = if ($case.Warns) { $warning } else { $null }
+        if ($value -ne $case.Expected -or $script:ConfigWarning -cne $expectedWarning) {
+            $problems += "PollMs=[$($case.Raw)] gave $value with warning [$script:ConfigWarning]"
+        }
+    }
+    $script:ConfigWarning = $null
+    if ($problems.Count) { throw ($problems -join "`n") }
+}
+
+Invoke-Check "PowerShell DIP conversion" {
+    Add-Type -AssemblyName WindowsBase
+    . ([scriptblock]::Create((Get-ScriptFunctionSource $OverlayScript @("ConvertTo-DipBounds"))))
+
+    # A 150% display: 144 DPI device pixels, so TransformFromDevice scales by 96/144.
+    $scale = 96.0 / 144.0
+    $fromDevice = New-Object System.Windows.Media.Matrix($scale, 0, 0, $scale, 0, 0)
+    $device = @{ Left = -1920; Top = 150; Width = 1920; Height = 1080 }
+
+    $dip = ConvertTo-DipBounds $device $fromDevice
+    $expected = @{ Left = -1280; Top = 100; Width = 1280; Height = 720 }
+    foreach ($key in $expected.Keys) {
+        if ([math]::Abs($dip[$key] - $expected[$key]) -gt 1e-9) {
+            throw "150% $key was $($dip[$key]), expected $($expected[$key])"
+        }
+    }
+
+    $unscaled = ConvertTo-DipBounds $device $null
+    foreach ($key in $device.Keys) {
+        if ($unscaled[$key] -ne $device[$key]) { throw "No transform changed $key to $($unscaled[$key])" }
+    }
+}
+
+Invoke-Check "Native command output drain" {
+    # More than a pipe buffer on both streams: this times out unless both are
+    # read while the child is still running.
+    $hostExe = (Get-Process -Id $PID).Path
+    $result = Invoke-NativeCommand -FilePath $hostExe -ArgumentList @(
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[Console]::Out.Write('o' * 200000); [Console]::Error.Write('e' * 100000)"
+    ) -TimeoutSeconds 60
+
+    if ($result.ExitCode -ne 0) { throw "Child exited $($result.ExitCode)" }
+    if ($result.Stdout.Length -ne 200000) { throw "Read $($result.Stdout.Length) of 200000 stdout characters" }
+    if ($result.Stderr.Length -ne 100000) { throw "Read $($result.Stderr.Length) of 100000 stderr characters" }
+}
+
 Invoke-Check "AHK /iLib parse" {
     if (-not $Ahk) { throw "AutoHotkey was not resolved." }
 
-    $libOut = Join-Path $env:TEMP "RandOverlay-AHK-iLib.txt"
-    if (Test-Path -LiteralPath $libOut) {
-        Remove-Item -LiteralPath $libOut -Force
-    }
-
+    $libOut = Join-Path $env:TEMP ("RandOverlay-AHK-iLib-{0}.txt" -f [Guid]::NewGuid().ToString("N"))
     try {
-        $result = Invoke-NativeCommand -FilePath $Ahk -ArgumentList @(
-            "/ErrorStdOut",
-            "/iLib",
-            $libOut,
-            (Join-Path $Root "RandOverlay.ahk")
-        ) -TimeoutSeconds 20
+        foreach ($relativePath in @(
+            "RandOverlay.ahk",
+            "Lib\RandOverlayParse.ahk",
+            "tests\ahk\ParseFixture.ahk"
+        )) {
+            $result = Invoke-NativeCommand -FilePath $Ahk -ArgumentList @(
+                "/ErrorStdOut",
+                "/iLib",
+                $libOut,
+                (Join-Path $Root $relativePath)
+            ) -TimeoutSeconds 20
 
-        if ($result.ExitCode -ne 0) {
-            throw (($result.Stdout + $result.Stderr).Trim())
+            if ($result.ExitCode -ne 0) {
+                throw "$relativePath`: " + (($result.Stdout + $result.Stderr).Trim())
+            }
         }
     } finally {
         if (Test-Path -LiteralPath $libOut) {
             Remove-Item -LiteralPath $libOut -Force
         }
+    }
+}
+
+# Runs even with -SkipAhkRuntime: the harness opens no window, so CI can run it.
+Invoke-Check "AHK Archipelago fixture" {
+    if (-not $Ahk) { throw "AutoHotkey was not resolved." }
+
+    $expectedRows = @(Get-ArchipelagoFixtureRows).Count
+    $result = Invoke-NativeCommand -FilePath $Ahk -ArgumentList @(
+        "/force",
+        "/ErrorStdOut",
+        (Join-Path $Root "tests\ahk\ParseFixture.ahk"),
+        $FixturePath
+    ) -TimeoutSeconds 20
+
+    $combined = (($result.Stdout + $result.Stderr) -split "\r?\n" | Where-Object { $_ -and $_ -notmatch '^ok line ' }) -join "`n"
+    if ($result.ExitCode -ne 0) { throw "ParseFixture.ahk exited $($result.ExitCode)`n$combined" }
+    if ($combined -match "(?i)\b(error|warning)\b") { throw $combined }
+    # An executable that runs nothing also exits 0 with no output, so the
+    # harness must account for every fixture row.
+    if ($result.Stdout -notmatch "(?m)^rows=(\d+) failures=0\r?$") {
+        throw "ParseFixture.ahk printed no passing summary: $combined"
+    }
+    if ([int]$Matches[1] -ne $expectedRows) {
+        throw "ParseFixture.ahk checked $($Matches[1]) rows; the fixture has $expectedRows"
     }
 }
 

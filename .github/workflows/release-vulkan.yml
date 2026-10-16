@@ -19,10 +19,32 @@ jobs:
           fetch-depth: 0
 
       - name: Install x64 MinGW-w64
+        id: msys2
         uses: msys2/setup-msys2@v2
         with:
           update: true
           install: mingw-w64-x86_64-gcc
+
+      # setup-msys2 installs under the runner's temp folder, not C:\msys64. build.bat and
+      # tests\run_tests.bat both read RANDOVERLAY_GCC; the bin folder also goes on PATH so
+      # the compiler can load its own DLLs.
+      - name: Point the build at the MinGW-w64 toolchain
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          if (-not $env:MSYS2_LOCATION) { throw 'setup-msys2 did not report msys2-location' }
+          $bin = Join-Path $env:MSYS2_LOCATION 'mingw64\bin'
+          foreach ($tool in @('g++.exe','gcc.exe','ar.exe','windres.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $bin $tool))) { throw "$tool is missing from $bin" }
+          }
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $bin
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value @(
+            "RANDOVERLAY_GCC=$(Join-Path $bin 'g++.exe')"
+            "RANDOVERLAY_GCC_C=$(Join-Path $bin 'gcc.exe')"
+            "RANDOVERLAY_AR=$(Join-Path $bin 'ar.exe')"
+            "RANDOVERLAY_WINDRES=$(Join-Path $bin 'windres.exe')"
+          )
 
       - name: Install pinned Vulkan SDK
         shell: pwsh
@@ -44,11 +66,12 @@ jobs:
         working-directory: Vulkan-DLL-Version
         env:
           VULKAN_SDK: C:\VulkanSDK\1.4.341.1
-          RANDOVERLAY_GCC: C:\msys64\mingw64\bin\g++.exe
-          RANDOVERLAY_GCC_C: C:\msys64\mingw64\bin\gcc.exe
-          RANDOVERLAY_AR: C:\msys64\mingw64\bin\ar.exe
-          RANDOVERLAY_WINDRES: C:\msys64\mingw64\bin\windres.exe
         run: build.bat --no-pause
+
+      # Same pin as validate.yml; Test-RandOverlay.ps1 checks the AHK sources with it.
+      - name: Install AutoHotkey v1
+        shell: pwsh
+        run: choco install autohotkey.portable --version=1.1.37.1 -y --no-progress
 
       - name: Run unit and repository validation
         shell: pwsh
@@ -56,6 +79,16 @@ jobs:
           & .\Vulkan-DLL-Version\tests\run_tests.bat
           if ($LASTEXITCODE -ne 0) { throw "Vulkan units failed: $LASTEXITCODE" }
           .\Test-RandOverlay.ps1 -SkipAhkRuntime
+
+      # The installer and stack suites gate publication: a failure here stops the job
+      # before any release asset is built or uploaded.
+      - name: Run Vulkan installer lifecycle tests
+        shell: pwsh
+        run: .\Vulkan-DLL-Version\tests\installer\Test-Installer.ps1
+
+      - name: Run Vulkan stack manager tests
+        shell: pwsh
+        run: .\Vulkan-DLL-Version\tests\installer\Test-Stack.ps1
 
       - name: Build deterministic release artifacts
         shell: pwsh

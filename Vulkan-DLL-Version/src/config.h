@@ -53,9 +53,14 @@ struct RandOverlayConfig {
     int   fadeInMs            = 300;                      // fade-in duration (parity: FadeInMs)
     int   fadeOutMs           = 500;                      // fade-out duration (parity: FadeOutMs)
     std::string iniPathUsed;                              // for diagnostics
+    // First problem found by the last load(), worded exactly as the PS+WPF
+    // runtime words it (AHK matches except for colours, which it reports as
+    // "Invalid color value"); empty when the ini was clean. The caller logs it.
+    std::string warning;
     bool  loaded              = false;
 
     void load(const std::string& presetOverride = "");
+    void loadFrom(const std::string& iniPath, const std::string& presetOverride = "");
 };
 
 namespace rocfg_detail {
@@ -82,6 +87,51 @@ inline bool parseHexColor(const std::string& in, float out[3]) {
     out[0] = (v[0] * 16 + v[1]) / 255.0f;
     out[1] = (v[2] * 16 + v[3]) / 255.0f;
     out[2] = (v[4] * 16 + v[5]) / 255.0f;
+    return true;
+}
+
+// The warning for an ini that could not be used, worded as AHK and PS+WPF word
+// it. They always fall back to RAC1; the layer falls back to the preset it is
+// loading, so that preset is named. Empty when the ini was opened.
+inline std::string iniProblem(const std::string& iniPath, bool opened, const std::string& preset) {
+    if (opened) return "";
+    return (iniPath.empty() ? "RandOverlay.ini not found" : "Could not read RandOverlay.ini")
+           + std::string("; using built-in ") + preset + " defaults.";
+}
+
+// Whole-string numeric parsers matching the other two runtimes' patterns:
+// ^-?\d+$ for integers and ^-?\d+(\.\d+)?$ for VerticalPercent. Unlike
+// std::stoi/stof they reject trailing junk ("12abc"), and the decimal parse is
+// done by hand so the host process's C locale cannot change what '.' means.
+inline bool parseStrictInt(const std::string& s, int& out) {
+    size_t i = (!s.empty() && s[0] == '-') ? 1 : 0;
+    if (i >= s.size()) return false;
+    long long v = 0;
+    for (; i < s.size(); i++) {
+        if (s[i] < '0' || s[i] > '9') return false;
+        v = v * 10 + (s[i] - '0');
+        if (v > 2147483648LL) return false; // out of int range either way
+    }
+    if (s[0] == '-') v = -v;
+    if (v > 2147483647LL) return false;
+    out = (int)v;
+    return true;
+}
+
+inline bool parseStrictDecimal(const std::string& s, float& out) {
+    size_t i = (!s.empty() && s[0] == '-') ? 1 : 0;
+    size_t intStart = i;
+    double v = 0.0;
+    while (i < s.size() && s[i] >= '0' && s[i] <= '9') v = v * 10.0 + (s[i++] - '0');
+    if (i == intStart) return false;
+    if (i < s.size()) {
+        if (s[i++] != '.') return false;
+        size_t fracStart = i;
+        double scale = 0.1;
+        while (i < s.size() && s[i] >= '0' && s[i] <= '9') { v += (s[i++] - '0') * scale; scale *= 0.1; }
+        if (i == fracStart || i != s.size()) return false;
+    }
+    out = (float)(s[0] == '-' ? -v : v);
     return true;
 }
 
@@ -115,16 +165,32 @@ inline std::string resolveIniPath() {
 
 } // namespace rocfg_detail
 
+// The settings that decide which font files the overlay loads. Two configs with
+// the same key draw with the same faces; only the size can still differ.
+inline std::string fontSourceKey(const RandOverlayConfig& c) {
+    return c.fontFile + '\n' + c.fontFamily + '\n' + c.fontFallback;
+}
+
 inline void RandOverlayConfig::load(const std::string& presetOverride) {
+    loadFrom(rocfg_detail::resolveIniPath(), presetOverride);
+}
+
+// load() with the ini path already resolved ("" when none was found).
+inline void RandOverlayConfig::loadFrom(const std::string& ini, const std::string& presetOverride) {
     using namespace rocfg_detail;
-    std::string ini = resolveIniPath();
+    // Every load starts from the built-in defaults, as the AHK and PS+WPF
+    // runtimes' single load does. The layer reloads on each preset switch, and
+    // a key the new [Preset.X] section (or the ini) leaves out must read as its
+    // default, not as whatever the previous preset set.
+    *this = RandOverlayConfig();
     iniPathUsed = ini;
-    if (ini.empty()) return; // keep defaults
 
-    std::ifstream f(ini);
-    if (!f.is_open()) return;
-
+    // A missing or unreadable ini still applies the preset override and its
+    // preset defaults below, with no sections to read.
     std::map<std::string, std::map<std::string, std::string>> sections;
+    std::ifstream f;
+    if (!ini.empty()) f.open(ini);
+    loaded = f.is_open();
     std::string line, section;
     while (std::getline(f, line)) {
         std::string t = trim(line);
@@ -143,12 +209,39 @@ inline void RandOverlayConfig::load(const std::string& presetOverride) {
         out = ki->second;
         return true;
     };
+    auto warn = [&](const std::string& message) {
+        if (warning.empty()) warning = message; // first problem wins, like AHK/PS
+    };
+    // Reject rather than clamp, as AHK and PS+WPF do: a malformed or
+    // out-of-range value keeps the default and is reported. An empty value is
+    // the same as an absent key there, so it is not reported.
+    auto readInt = [&](const std::string& sec, const char* key, int minValue, int& field) {
+        std::string raw;
+        if (!get(sec, key, raw) || raw.empty()) return;
+        int v = 0;
+        if (parseStrictInt(raw, v) && v >= minValue) field = v;
+        else warn("Invalid " + sec + "." + key + "; using default.");
+    };
 
     std::string tmp;
-    if (get("General", "ActivePreset", tmp) && !tmp.empty()) activePreset = tmp;
+    if (get("General", "ActivePreset", tmp) && !tmp.empty()) {
+        // Same normalisation as AHK/PS: case-insensitive, and anything that
+        // is not a known preset falls back to RAC1 with a warning instead of
+        // silently missing every [Preset.*] section.
+        std::string preset = tmp;
+        std::transform(preset.begin(), preset.end(), preset.begin(),
+                       [](unsigned char c) { return (char)std::toupper(c); });
+        if (preset == "RAC1" || preset == "RAC2" || preset == "RAC3") {
+            activePreset = preset;
+        } else {
+            warn("Unknown ActivePreset '" + preset + "'; using RAC1 defaults.");
+            activePreset = "RAC1";
+        }
+    }
     if (get("General", "EnabledPresets", tmp) && !tmp.empty()) enabledPresets = tmp;
     else enabledPresets = activePreset; // compatibility with pre-auto-detection INIs
     if (!presetOverride.empty()) activePreset = presetOverride;
+    warn(iniProblem(ini, loaded, activePreset));
     // Paths are the one setting a shared ini genuinely cannot share. Adopting
     // the Windows LogDir on Linux would leave the overlay tailing a path that
     // cannot exist, so it would start cleanly and then silently never fire.
@@ -166,14 +259,18 @@ inline void RandOverlayConfig::load(const std::string& presetOverride) {
     if (get("General", "LogDirLinux", tmp) && !tmp.empty())      logDir = tmp;
     if (get("General", "LauncherExeLinux", tmp) && !tmp.empty()) launcherExe = tmp;
 #endif
-    if (get("General", "DisplayMs", tmp))                     { try { displayMs = std::stoi(tmp); } catch (...) {} }
-    if (get("General", "PollMs", tmp))                        { try { pollMs    = std::stoi(tmp); } catch (...) {} }
-    if (get("General", "FadeInMs", tmp))                      { try { fadeInMs  = std::stoi(tmp); } catch (...) {} }
-    if (get("General", "FadeOutMs", tmp))                     { try { fadeOutMs = std::stoi(tmp); } catch (...) {} }
+    // PollMs=0 would rescan the log directory on every presented frame and
+    // DisplayMs=0 would never show a message, so both need at least 1.
+    readInt("General", "DisplayMs", 1, displayMs);
+    readInt("General", "PollMs",    1, pollMs);
+    readInt("General", "FadeInMs",  0, fadeInMs);
+    readInt("General", "FadeOutMs", 0, fadeOutMs);
 
     std::string psec = "Preset." + activePreset;
 
-    // Reset preset-derived defaults before applying a runtime switch.
+    // The only defaults that differ by preset, as in AHK's
+    // ArchDefaultEmulatorsForPreset and PS+WPF's $PresetDefaults. Every other
+    // preset key shares the struct defaults across RAC1/RAC2/RAC3.
     if (activePreset == "RAC2") {
         emulatorProcs = "pcsx2-qt.exe,pcsx2.exe";
         clientComponent = "Ratchet & Clank 2 Client";
@@ -187,13 +284,26 @@ inline void RandOverlayConfig::load(const std::string& presetOverride) {
 
     if (get(psec, "EmulatorProcesses", tmp) && !tmp.empty())  emulatorProcs = tmp;
     if (get(psec, "ClientComponent", tmp) && !tmp.empty())    clientComponent = tmp;
-    if (get(psec, "OverlayColor", tmp))                       parseHexColor(tmp, overlayColor);
-    if (get(psec, "BackgroundColor", tmp))                    parseHexColor(tmp, bgColor);
-    if (get(psec, "VerticalPercent", tmp))                    { try { verticalPercent = std::stof(tmp); } catch (...) {} }
+    // An unparseable colour keeps the default and is reported; an empty one is
+    // the same as an absent key, as in PS+WPF.
+    auto readColor = [&](const char* key, float field[3]) {
+        std::string raw;
+        if (!get(psec, key, raw) || raw.empty()) return;
+        if (!parseHexColor(raw, field)) warn("Invalid " + psec + "." + key + "; using default.");
+    };
+    readColor("OverlayColor", overlayColor);
+    readColor("BackgroundColor", bgColor);
+    // VerticalPercent is a fraction of the frame height; outside 0..1 the
+    // panel would land off-frame.
+    if (get(psec, "VerticalPercent", tmp) && !tmp.empty()) {
+        float v = 0.0f;
+        if (parseStrictDecimal(tmp, v) && v >= 0.0f && v <= 1.0f) verticalPercent = v;
+        else warn("Invalid " + psec + ".VerticalPercent; using default.");
+    }
     // VulkanFontSize is a 1080p baseline. Preserved pre-scaling INIs do not
     // contain this key, so they keep the Vulkan default instead of inheriting
     // the independent WPF size.
-    if (get(psec, "VulkanFontSize", tmp))                       { try { fontSize = std::stoi(tmp); } catch (...) {} }
+    readInt(psec, "VulkanFontSize", 1, fontSize);
     if (get(psec, "FontFamily", tmp) && !tmp.empty())         fontFamily = tmp;
     if (get(psec, "FontFallback", tmp) && !tmp.empty())       fontFallback = tmp;
     // Per-platform font overrides. FontFileLinux/FontFileWindows let one shared
@@ -206,6 +316,4 @@ inline void RandOverlayConfig::load(const std::string& presetOverride) {
     if (get(psec, "FontFamilyLinux", tmp) && !tmp.empty())    fontFamily = tmp;
     if (get(psec, "FontFallbackLinux", tmp) && !tmp.empty())  fontFallback = tmp;
 #endif
-
-    loaded = true;
 }

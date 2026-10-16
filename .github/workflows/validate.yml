@@ -18,6 +18,8 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 1.1.37.1 is the newest AutoHotkey v1 that Chocolatey publishes (there is no
+      # 1.1.37.02 package); Test-RandOverlay.ps1 prints the version it resolved.
       - name: Install AutoHotkey v1
         shell: pwsh
         run: choco install autohotkey.portable --version=1.1.37.1 -y --no-progress

@@ -18,6 +18,26 @@ $Failures = [System.Collections.Generic.List[string]]::new()
 # block scratch installs; the real wizard still requires RPCS3 to be closed.
 $env:RANDOVERLAY_ALLOW_RUNNING_EMULATOR = '1'
 
+# Flattens parsed JSON into sorted "path=[type]value" lines, so two manifests compare on
+# content rather than formatting, key order or escaping.
+function Get-JsonFieldLines($Node, [string]$Prefix = '') {
+    if ($null -eq $Node) { "$Prefix=null" }
+    elseif ($Node -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($property in $Node.PSObject.Properties) {
+            $name = if ($Prefix) { "$Prefix.$($property.Name)" } else { $property.Name }
+            Get-JsonFieldLines $property.Value $name
+        }
+    }
+    elseif ($Node -is [array]) { for ($i = 0; $i -lt $Node.Count; $i++) { Get-JsonFieldLines $Node[$i] "$Prefix[$i]" } }
+    else { "$Prefix=[$($Node.GetType().Name)]$Node" }
+}
+function Get-LayerManifestFields([string]$Path) {
+    # library_path is the one field that differs by design: the release points next to
+    # the installed DLL, the development manifest at build\, the template at a placeholder.
+    @(Get-JsonFieldLines (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json) |
+        Where-Object { $_ -notlike 'layer.library_path=*' } | Sort-Object)
+}
+
 New-Item -ItemType Directory -Path $RunRoot -Force | Out-Null
 try {
     $setupSource = Get-Content -LiteralPath (Join-Path $VulkanRoot 'installer\Setup-RandOverlay.ps1') -Raw
@@ -29,12 +49,14 @@ try {
     Assert-True ($setupSource -match 'Use Up/Down to move, Space to toggle') 'the nightly keeps its multi-game checklist'
     Assert-True ($setupSource -match 'CouldNotAutoloadMatchingModule' -and $setupSource -match 'exact SHA-256 payload verification passed') 'setup has a hash-verified fallback when Authenticode tooling is unavailable'
 
-    $layerDll = Join-Path $VulkanRoot 'build\RandOverlay_layer.dll'
-    if (-not (Test-Path -LiteralPath $layerDll)) {
-        $layerDll = Join-Path $RunRoot 'RandOverlay_layer.fixture.dll'
-        Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\version.dll') -Destination $layerDll
-    }
-    & (Join-Path $VulkanRoot 'installer\Build-RandOverlayRelease.ps1') -Format Bat,Zip,Exe -LayerDll $layerDll -OutputRoot (Join-Path $RunRoot 'dist')
+    # Both builds read one private copy of the layer, so a rebuild of build\ between them
+    # cannot show up as a determinism failure.
+    $layerSource = Join-Path $VulkanRoot 'build\RandOverlay_layer.dll'
+    if (-not (Test-Path -LiteralPath $layerSource)) { $layerSource = Join-Path $env:WINDIR 'System32\version.dll' }
+    $layerDll = Join-Path $RunRoot 'RandOverlay_layer.fixture.dll'
+    Copy-Item -LiteralPath $layerSource -Destination $layerDll
+    # -AllowDirty: the suite runs from working trees with uncommitted changes.
+    & (Join-Path $VulkanRoot 'installer\Build-RandOverlayRelease.ps1') -Format Bat,Zip,Exe -LayerDll $layerDll -OutputRoot (Join-Path $RunRoot 'dist') -AllowDirty
     $zip = Get-ChildItem -LiteralPath (Join-Path $RunRoot 'dist') -Filter 'RandOverlay-Vulkan-*.zip' | Select-Object -First 1
     $selfExtractingBat = Get-ChildItem -LiteralPath (Join-Path $RunRoot 'dist') -Filter 'RandOverlay-Setup-*.bat' | Select-Object -First 1
     $exe = Get-ChildItem -LiteralPath (Join-Path $RunRoot 'dist') -Filter 'RandOverlay-Setup-*.exe' | Select-Object -First 1
@@ -50,7 +72,7 @@ try {
         Write-Host $bundleOutput
     }
     Assert-True $bundlePassed 'self-contained BAT verifies and extracts embedded ZIP'
-    & (Join-Path $VulkanRoot 'installer\Build-RandOverlayRelease.ps1') -Format Zip -LayerDll $layerDll -OutputRoot (Join-Path $RunRoot 'dist-second') | Out-Null
+    & (Join-Path $VulkanRoot 'installer\Build-RandOverlayRelease.ps1') -Format Zip -LayerDll $layerDll -OutputRoot (Join-Path $RunRoot 'dist-second') -AllowDirty | Out-Null
     $secondZip = Get-ChildItem -LiteralPath (Join-Path $RunRoot 'dist-second') -Filter 'RandOverlay-Vulkan-*.zip' | Select-Object -First 1
     Assert-True ((Get-FileHash $zip.FullName -Algorithm SHA256).Hash -eq (Get-FileHash $secondZip.FullName -Algorithm SHA256).Hash) 'release ZIP rebuild is deterministic'
     $expanded = Join-Path $RunRoot 'expanded'
@@ -60,6 +82,16 @@ try {
     $batchSetup = Join-Path $releaseRoot.FullName 'Install-RandOverlay.bat'
     Assert-True (Test-Path -LiteralPath $setup) 'release contains setup entrypoint'
     Assert-True (Test-Path -LiteralPath $batchSetup) 'release contains double-click batch entrypoint'
+    $releaseManifest = @(Get-LayerManifestFields (Join-Path $releaseRoot.FullName 'payload\RandOverlay_layer.json'))
+    foreach ($checkedIn in @('RandOverlay_layer.json','RandOverlay_layer.json.in')) {
+        $expected = @(Get-LayerManifestFields (Join-Path $VulkanRoot $checkedIn))
+        $sameManifest = $releaseManifest.Count -gt 0 -and (($expected -join "`n") -ceq ($releaseManifest -join "`n"))
+        if (-not $sameManifest) {
+            Write-Host "Layer manifest fields, $checkedIn (<=) vs release payload (=>):" -ForegroundColor Yellow
+            Compare-Object $expected $releaseManifest -CaseSensitive | ForEach-Object { Write-Host "  $($_.SideIndicator) $($_.InputObject)" }
+        }
+        Assert-True $sameManifest "release layer manifest matches $checkedIn on every field except library_path"
+    }
 
     $fakeArch = Join-Path $RunRoot 'Archipelago'
     New-Item -ItemType Directory -Path (Join-Path $fakeArch 'custom_worlds') -Force | Out-Null
