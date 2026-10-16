@@ -382,6 +382,20 @@ static void ShutdownImgui() {
     g_imguiReady = false;
 }
 
+// A failed InitImgui leaves g_imguiReady false, so ShutdownImgui skips it and
+// the next InitImgui would create another context: destroy this one now. The
+// backend is shut down first if Init got as far as installing it, since
+// DestroyContext asserts on a renderer backend still attached. The fonts
+// LoadOverlayFonts added go with the context's atlas, so forget them too.
+static void DiscardFailedImgui() {
+    if (!ImGui::GetCurrentContext()) return;
+    if (ImGui::GetIO().BackendRendererUserData) ImGui_ImplVulkan_Shutdown();
+    ImGui::DestroyContext();
+    g_primaryFont = nullptr;
+    g_digitFont = nullptr;
+    g_fontSourceKey.clear();
+}
+
 // ── Overlay fonts and layout ──────────────────────────────────────────────────
 // VulkanFontSize is the 1080p baseline, scaled to the swapchain height, so the
 // layout follows windowed/fullscreen resolution changes with each swapchain.
@@ -475,6 +489,7 @@ static bool InitImgui() {
 
     if (!ImGui_ImplVulkan_LoadFunctions(g_apiVersion, ImguiLoader, nullptr)) {
         LayerLog("ImGui_ImplVulkan_LoadFunctions FAILED");
+        DiscardFailedImgui();
         return false;
     }
 
@@ -497,6 +512,7 @@ static bool InitImgui() {
 
     if (!ImGui_ImplVulkan_Init(&ii)) {
         LayerLog("ImGui_ImplVulkan_Init FAILED");
+        DiscardFailedImgui();
         return false;
     }
     g_imguiReady = true;
