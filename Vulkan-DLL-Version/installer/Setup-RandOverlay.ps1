@@ -597,6 +597,10 @@ foreach ($libName in @('StackManifest.ps1', 'StackDetect.ps1', 'StackActions.ps1
 . (Join-Path $script:SetupLibRoot 'StackActions.ps1')
 
 function Test-EmulatorsStopped {
+    # The installer suites work in scratch roots and a throwaway registry hive, so a
+    # running emulator cannot load what they write. RANDOVERLAY_ALLOW_RUNNING_EMULATOR=1
+    # is that test seam; nothing in the shipped flow sets it.
+    if ($env:RANDOVERLAY_ALLOW_RUNNING_EMULATOR -eq '1') { return }
     $running = @(Get-Process rpcs3,pcsx2-qt,pcsx2 -ErrorAction SilentlyContinue)
     if ($running.Count -gt 0) { throw 'Close RPCS3 and PCSX2 before changing the Vulkan layer.' }
 }

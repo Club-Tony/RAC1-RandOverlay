@@ -10,8 +10,8 @@ $RepoRoot = Split-Path $VulkanRoot -Parent
 $ArtifactRoot = Join-Path $PSScriptRoot 'artifacts'
 $RunRoot = Join-Path $ArtifactRoot ([guid]::NewGuid().ToString('N'))
 $InstallRoot = Join-Path $RunRoot 'LocalAppData\RandOverlay'
-$RegistryRelative = "Software\RandOverlayInstallerTests\$([guid]::NewGuid().ToString('N'))\ImplicitLayers"
-$RegistryPath = "HKCU:\$RegistryRelative"
+$TestHiveRelative = "Software\RandOverlayInstallerTests\$([guid]::NewGuid().ToString('N'))"
+$RegistryPath = "HKCU:\$TestHiveRelative\ImplicitLayers"
 $Failures = [System.Collections.Generic.List[string]]::new()
 . (Join-Path $PSScriptRoot 'TestCommon.ps1')
 # Isolated harness roots never load the live layer. A running RPCS3 must not
@@ -236,7 +236,7 @@ $duped = @(Get-Rpcs3Candidates @($Downloads, $Downloads))
     Assert-True ((Get-RegistryNames) -contains $unrelated) 'complete uninstall still preserves unrelated registration'
 }
 finally {
-    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($RegistryRelative, $false)
+    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($TestHiveRelative, $false)
     if (-not $KeepArtifacts -and [IO.Directory]::Exists($RunRoot)) { [IO.Directory]::Delete($RunRoot, $true) }
 }
 
